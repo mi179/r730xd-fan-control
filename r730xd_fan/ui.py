@@ -1,0 +1,1113 @@
+from __future__ import annotations
+
+import subprocess
+import threading
+import tkinter as tk
+from datetime import datetime
+from pathlib import Path
+
+import customtkinter as ctk
+
+from .config import IpmiSettings
+from .ipmi import (
+    CommandResult,
+    SensorReading,
+    auto_mode_request,
+    connection_test_request,
+    execute,
+    manual_mode_request,
+    parse_sensor_output,
+    sensor_snapshot_request,
+    speed_request,
+)
+
+
+COLORS = {
+    "background": "#07111F",
+    "surface": "#0D1B2A",
+    "surface_2": "#11243A",
+    "line": "#20364D",
+    "text": "#F2F7FC",
+    "muted": "#8FA6BC",
+    "blue": "#3B82F6",
+    "blue_hover": "#2563EB",
+    "cyan": "#38BDF8",
+    "green": "#22C55E",
+    "amber": "#F59E0B",
+    "red": "#EF4444",
+    "red_hover": "#DC2626",
+}
+
+
+class FanGauge(ctk.CTkFrame):
+    BASE_WIDTH = 254
+    BASE_HEIGHT = 210
+
+    def __init__(self, master: ctk.CTkBaseClass, value: int = 10) -> None:
+        super().__init__(master, fg_color="transparent")
+        self.value = value
+        self.canvas = tk.Canvas(
+            self,
+            width=self.BASE_WIDTH,
+            height=self.BASE_HEIGHT,
+            bg=COLORS["surface"],
+            highlightthickness=0,
+        )
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", self._canvas_resized)
+        self._render_gauge()
+
+    def set_value(self, value: int) -> None:
+        self.value = max(0, min(100, value))
+        self._render_gauge()
+
+    def _canvas_resized(self, event: tk.Event) -> None:
+        self._render_gauge(event.width, event.height)
+
+    def _render_gauge(self, width: int | None = None, height: int | None = None) -> None:
+        canvas = self.canvas
+        canvas.delete("all")
+        canvas_width = width or canvas.winfo_width()
+        canvas_height = height or canvas.winfo_height()
+        if canvas_width <= 1:
+            canvas_width = self.BASE_WIDTH
+        if canvas_height <= 1:
+            canvas_height = self.BASE_HEIGHT
+
+        scale = min(canvas_width / self.BASE_WIDTH, canvas_height / self.BASE_HEIGHT)
+        scale = max(0.65, min(1.75, scale))
+        offset_x = (canvas_width - self.BASE_WIDTH * scale) / 2
+        offset_y = (canvas_height - self.BASE_HEIGHT * scale) / 2
+
+        def point(x: float, y: float) -> tuple[float, float]:
+            return offset_x + x * scale, offset_y + y * scale
+
+        x1, y1 = point(34, 20)
+        x2, y2 = point(220, 206)
+        box = (x1, y1, x2, y2)
+        arc_width = max(9, round(15 * scale))
+        canvas.create_arc(
+            *box,
+            start=200,
+            extent=140,
+            style="arc",
+            width=arc_width,
+            outline=COLORS["line"],
+        )
+        extent = 140 * self.value / 100
+        color = COLORS["cyan"] if self.value <= 30 else COLORS["amber"]
+        if self.value >= 60:
+            color = COLORS["red"]
+        canvas.create_arc(
+            *box,
+            start=200,
+            extent=extent,
+            style="arc",
+            width=arc_width,
+            outline=color,
+        )
+        center_x, value_y = point(127, 103)
+        canvas.create_text(
+            center_x,
+            value_y,
+            text=f"{self.value}",
+            fill=COLORS["text"],
+            font=("Cascadia Mono", max(28, round(44 * scale)), "bold"),
+        )
+        center_x, label_y = point(127, 143)
+        canvas.create_text(
+            center_x,
+            label_y,
+            text="PERCENT OUTPUT",
+            fill=COLORS["muted"],
+            font=("Cascadia Mono", max(8, round(10 * scale)), "bold"),
+        )
+        zero_x, marker_y = point(34, 190)
+        hundred_x, _ = point(220, 190)
+        marker_font = ("Cascadia Mono", max(8, round(10 * scale)))
+        canvas.create_text(
+            zero_x, marker_y, text="0", fill=COLORS["muted"], anchor="w", font=marker_font
+        )
+        canvas.create_text(
+            hundred_x,
+            marker_y,
+            text="100",
+            fill=COLORS["muted"],
+            anchor="e",
+            font=marker_font,
+        )
+
+
+class ConnectionDialog(ctk.CTkToplevel):
+    def __init__(self, owner: "FanConsole") -> None:
+        super().__init__(owner, fg_color=COLORS["background"])
+        self.owner = owner
+        self.title("iDRAC Connection Settings")
+        self.geometry("580x520")
+        self.minsize(500, 480)
+        self.resizable(True, True)
+        self.transient(owner)
+
+        self.host_var = tk.StringVar(value=owner.host_var.get())
+        self.user_var = tk.StringVar(value=owner.user_var.get())
+        self.password_var = tk.StringVar(value=owner.password_var.get())
+        self.exe_var = tk.StringVar(value=owner.exe_var.get())
+        self.show_password_var = tk.BooleanVar(value=False)
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        header = ctk.CTkFrame(self, corner_radius=0, fg_color=COLORS["surface"])
+        header.grid(row=0, column=0, sticky="ew")
+        ctk.CTkLabel(
+            header,
+            text="IDRAC  /  CONNECTION SETTINGS",
+            text_color=COLORS["text"],
+            font=("Microsoft YaHei UI", 18, "bold"),
+        ).pack(anchor="w", padx=24, pady=(20, 4))
+        ctk.CTkLabel(
+            header,
+            text="密码仅保存在当前程序内存，不会写入配置文件",
+            text_color=COLORS["muted"],
+            font=("Microsoft YaHei UI", 10),
+        ).pack(anchor="w", padx=24, pady=(0, 18))
+
+        form = ctk.CTkFrame(
+            self,
+            corner_radius=12,
+            border_width=1,
+            border_color=COLORS["line"],
+            fg_color=COLORS["surface"],
+        )
+        form.grid(row=1, column=0, padx=22, pady=20, sticky="nsew")
+        form.grid_columnconfigure((0, 1), weight=1)
+
+        self._add_entry(form, "IDRAC HOST", self.host_var, row=0, column=0)
+        self._add_entry(form, "USERNAME", self.user_var, row=0, column=1)
+        self.password_entry = self._add_entry(
+            form, "PASSWORD", self.password_var, row=1, column=0, columnspan=2, show="●"
+        )
+        self._add_entry(
+            form, "IPMITOOL EXECUTABLE", self.exe_var, row=2, column=0, columnspan=2
+        )
+
+        show_password = ctk.CTkCheckBox(
+            form,
+            text="显示密码",
+            variable=self.show_password_var,
+            command=self._toggle_password,
+            checkbox_width=17,
+            checkbox_height=17,
+            border_width=1,
+            fg_color=COLORS["blue"],
+            hover_color=COLORS["blue_hover"],
+            text_color=COLORS["muted"],
+            font=("Microsoft YaHei UI", 10),
+        )
+        show_password.grid(row=3, column=0, columnspan=2, padx=18, pady=(0, 16), sticky="w")
+
+        actions = ctk.CTkFrame(self, fg_color="transparent")
+        actions.grid(row=2, column=0, padx=22, pady=(0, 22), sticky="ew")
+        actions.grid_columnconfigure((0, 1), weight=1)
+        ctk.CTkButton(
+            actions,
+            text="CANCEL",
+            height=42,
+            corner_radius=8,
+            fg_color=COLORS["surface_2"],
+            hover_color=COLORS["line"],
+            border_width=1,
+            border_color=COLORS["line"],
+            font=("Cascadia Mono", 10, "bold"),
+            command=self.destroy,
+        ).grid(row=0, column=0, padx=(0, 6), sticky="ew")
+        ctk.CTkButton(
+            actions,
+            text="APPLY SETTINGS",
+            height=42,
+            corner_radius=8,
+            fg_color=COLORS["blue"],
+            hover_color=COLORS["blue_hover"],
+            font=("Cascadia Mono", 10, "bold"),
+            command=self._save,
+        ).grid(row=0, column=1, padx=(6, 0), sticky="ew")
+
+        self.after(80, self._activate)
+
+    def _add_entry(
+        self,
+        parent: ctk.CTkFrame,
+        label: str,
+        variable: tk.StringVar,
+        *,
+        row: int,
+        column: int,
+        columnspan: int = 1,
+        show: str | None = None,
+    ) -> ctk.CTkEntry:
+        field = ctk.CTkFrame(parent, fg_color="transparent")
+        field.grid(
+            row=row,
+            column=column,
+            columnspan=columnspan,
+            padx=18,
+            pady=(14, 6),
+            sticky="ew",
+        )
+        ctk.CTkLabel(
+            field,
+            text=label,
+            text_color=COLORS["muted"],
+            font=("Cascadia Mono", 9, "bold"),
+        ).pack(anchor="w", pady=(0, 5))
+        entry = ctk.CTkEntry(
+            field,
+            textvariable=variable,
+            show=show,
+            height=38,
+            corner_radius=7,
+            fg_color=COLORS["background"],
+            border_color=COLORS["line"],
+            text_color=COLORS["text"],
+            font=("Cascadia Mono", 11),
+        )
+        entry.pack(fill="x")
+        return entry
+
+    def _activate(self) -> None:
+        self.grab_set()
+        self.focus_force()
+        self.password_entry.focus_set()
+
+    def _toggle_password(self) -> None:
+        self.password_entry.configure(show="" if self.show_password_var.get() else "●")
+
+    def _save(self) -> None:
+        self.owner.host_var.set(self.host_var.get().strip())
+        self.owner.user_var.set(self.user_var.get().strip())
+        self.owner.password_var.set(self.password_var.get())
+        self.owner.exe_var.set(self.exe_var.get().strip())
+        self.owner._refresh_connection_summary()
+        self.destroy()
+
+
+class SensorDialog(ctk.CTkToplevel):
+    CATEGORY_ORDER = {
+        "TEMPERATURE": 0,
+        "FAN": 1,
+        "POWER": 2,
+        "VOLTAGE": 3,
+        "CURRENT": 4,
+        "SYSTEM": 5,
+    }
+
+    def __init__(self, owner: "FanConsole") -> None:
+        super().__init__(owner, fg_color=COLORS["background"])
+        self.owner = owner
+        self.title("iDRAC Sensor Monitor")
+        self.geometry("920x640")
+        self.minsize(650, 450)
+        self.transient(owner)
+        self.protocol("WM_DELETE_WINDOW", self._close)
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+
+        header = ctk.CTkFrame(self, corner_radius=0, fg_color=COLORS["surface"])
+        header.grid(row=0, column=0, sticky="ew")
+        header.grid_columnconfigure(0, weight=1)
+        title_box = ctk.CTkFrame(header, fg_color="transparent")
+        title_box.grid(row=0, column=0, padx=24, pady=17, sticky="w")
+        ctk.CTkLabel(
+            title_box,
+            text="IDRAC  /  SENSOR MONITOR",
+            text_color=COLORS["text"],
+            font=("Microsoft YaHei UI", 18, "bold"),
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            title_box,
+            text="温度 · 风扇 RPM · 功耗 · 电压 · 全部 SDR 记录",
+            text_color=COLORS["muted"],
+            font=("Microsoft YaHei UI", 10),
+        ).pack(anchor="w", pady=(4, 0))
+
+        self.refresh_button = ctk.CTkButton(
+            header,
+            text="REFRESH",
+            width=108,
+            height=30,
+            corner_radius=7,
+            fg_color=COLORS["blue"],
+            hover_color=COLORS["blue_hover"],
+            font=("Cascadia Mono", 9, "bold"),
+            command=self.refresh,
+        )
+        self.refresh_button.grid(row=0, column=1, padx=24, pady=20, sticky="e")
+
+        summary = ctk.CTkFrame(self, fg_color="transparent")
+        summary.grid(row=1, column=0, padx=22, pady=(14, 8), sticky="ew")
+        summary.grid_columnconfigure(0, weight=1)
+        self.summary_label = ctk.CTkLabel(
+            summary,
+            text="WAITING FOR SENSOR DATA",
+            text_color=COLORS["cyan"],
+            font=("Cascadia Mono", 10, "bold"),
+        )
+        self.summary_label.grid(row=0, column=0, sticky="w")
+        self.updated_label = ctk.CTkLabel(
+            summary,
+            text="",
+            text_color=COLORS["muted"],
+            font=("Cascadia Mono", 9),
+        )
+        self.updated_label.grid(row=0, column=1, sticky="e")
+
+        self.sensor_list = ctk.CTkScrollableFrame(
+            self,
+            corner_radius=12,
+            border_width=1,
+            border_color=COLORS["line"],
+            fg_color=COLORS["surface"],
+            scrollbar_fg_color=COLORS["surface"],
+            scrollbar_button_color=COLORS["line"],
+            scrollbar_button_hover_color=COLORS["muted"],
+        )
+        self.sensor_list.grid(row=2, column=0, padx=22, pady=(0, 20), sticky="nsew")
+        self._render_empty("正在读取 iDRAC 传感器……")
+        self._initial_refresh_job = self.after(120, self._initial_refresh)
+
+    def _initial_refresh(self) -> None:
+        self._initial_refresh_job = None
+        self.refresh()
+
+    def _alive(self) -> bool:
+        try:
+            return bool(self.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def refresh(self) -> None:
+        if not self._alive():
+            return
+        if self._initial_refresh_job is not None:
+            self.after_cancel(self._initial_refresh_job)
+            self._initial_refresh_job = None
+        self.set_loading()
+        if not self.owner._request_sensor_snapshot(self):
+            self.finish_loading()
+
+    def set_loading(self) -> None:
+        if not self._alive():
+            return
+        self.refresh_button.configure(state="disabled", text="READING...")
+        self.updated_label.configure(text="QUERYING SDR")
+
+    def finish_loading(self) -> None:
+        if self._alive():
+            self.refresh_button.configure(state="normal", text="REFRESH")
+
+    def show_result(self, result: CommandResult) -> None:
+        if not self._alive():
+            return
+        readings = parse_sensor_output(result.stdout)
+        self._render_readings(readings)
+        temperatures = sum(item.category == "TEMPERATURE" for item in readings)
+        fans = sum(item.category == "FAN" for item in readings)
+        alerts = sum(item.is_alert for item in readings)
+        summary_text = (
+            f"ALL {len(readings):02d}  /  TEMP {temperatures:02d}  /  "
+            f"FAN {fans:02d}  /  ALERT {alerts:02d}"
+        )
+        self.summary_label.configure(
+            text=summary_text,
+            text_color=COLORS["red"] if alerts else COLORS["green"],
+        )
+        self.updated_label.configure(
+            text=f"UPDATED {datetime.now().strftime('%H:%M:%S')}  /  {result.elapsed_seconds:.2f}s"
+        )
+        self.owner._append_log(
+            "SENSOR",
+            f"已读取 {len(readings)} 条记录；温度 {temperatures}，风扇 {fans}，告警 {alerts}。",
+        )
+
+    def _render_readings(self, readings: list[SensorReading]) -> None:
+        for child in self.sensor_list.winfo_children():
+            child.destroy()
+        if not readings:
+            self._render_empty("iDRAC 没有返回可显示的传感器记录。")
+            return
+
+        ordered = sorted(
+            enumerate(readings),
+            key=lambda item: (
+                self.CATEGORY_ORDER.get(item[1].category, 99),
+                item[0],
+            ),
+        )
+        for row_index, (_source_index, reading) in enumerate(ordered):
+            row = ctk.CTkFrame(
+                self.sensor_list,
+                corner_radius=8,
+                fg_color=COLORS["surface_2"] if row_index % 2 == 0 else COLORS["surface"],
+            )
+            row.pack(fill="x", padx=3, pady=2)
+            row.grid_columnconfigure(0, weight=3)
+            row.grid_columnconfigure(1, weight=2)
+
+            name_box = ctk.CTkFrame(row, fg_color="transparent")
+            name_box.grid(row=0, column=0, padx=12, pady=8, sticky="ew")
+            ctk.CTkLabel(
+                name_box,
+                text=reading.name,
+                anchor="w",
+                justify="left",
+                text_color=COLORS["text"],
+                font=("Microsoft YaHei UI", 10, "bold"),
+            ).pack(fill="x", anchor="w")
+            metadata = [reading.category]
+            if reading.sensor_id:
+                metadata.append(f"ID {reading.sensor_id}")
+            if reading.entity:
+                metadata.append(f"ENTITY {reading.entity}")
+            ctk.CTkLabel(
+                name_box,
+                text="  ·  ".join(metadata),
+                anchor="w",
+                text_color=COLORS["muted"],
+                font=("Cascadia Mono", 8),
+            ).pack(fill="x", anchor="w", pady=(2, 0))
+
+            ctk.CTkLabel(
+                row,
+                text=reading.reading or "—",
+                anchor="w",
+                justify="left",
+                text_color=COLORS["cyan"],
+                font=("Cascadia Mono", 9, "bold"),
+            ).grid(row=0, column=1, padx=10, pady=8, sticky="ew")
+
+            if not reading.parsed:
+                status_color = COLORS["muted"]
+            elif reading.is_alert:
+                status_color = COLORS["red"]
+            elif reading.status.strip().casefold() == "ok":
+                status_color = COLORS["green"]
+            else:
+                status_color = COLORS["muted"]
+            ctk.CTkLabel(
+                row,
+                text=reading.status.upper() or "N/A",
+                width=72,
+                height=28,
+                corner_radius=7,
+                fg_color=COLORS["background"],
+                text_color=status_color,
+                font=("Cascadia Mono", 9, "bold"),
+            ).grid(row=0, column=2, padx=(6, 12), pady=8, sticky="e")
+
+    def _render_empty(self, message: str) -> None:
+        for child in self.sensor_list.winfo_children():
+            child.destroy()
+        ctk.CTkLabel(
+            self.sensor_list,
+            text=message,
+            text_color=COLORS["muted"],
+            font=("Microsoft YaHei UI", 11),
+        ).pack(padx=24, pady=40)
+
+    def _close(self) -> None:
+        if self._initial_refresh_job is not None:
+            self.after_cancel(self._initial_refresh_job)
+            self._initial_refresh_job = None
+        # CTkScrollableFrame 6.0 registers global wheel bindings. Reuse this
+        # window instead of repeatedly destroying/recreating those bindings.
+        self.withdraw()
+
+
+class FanConsole(ctk.CTk):
+    def __init__(self, startup_message: str | None = None) -> None:
+        super().__init__(fg_color=COLORS["background"])
+        self.title("R730xd Thermal Control Console")
+        self.geometry("1120x820")
+        self.minsize(900, 700)
+
+        defaults = IpmiSettings.from_environment()
+        self.manual_mode = False
+        self.busy = False
+        self.current_speed = 10
+        self.action_buttons: list[ctk.CTkButton] = []
+        self.speed_buttons: list[ctk.CTkButton] = []
+        self.sensor_dialog: SensorDialog | None = None
+
+        self.host_var = tk.StringVar(value=defaults.host)
+        self.user_var = tk.StringVar(value=defaults.username)
+        self.password_var = tk.StringVar(value=defaults.password)
+        self.exe_var = tk.StringVar(value=str(defaults.executable))
+        self.interlock_var = tk.BooleanVar(value=False)
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        self._build_header()
+        self._build_body()
+        self._build_log_panel()
+        self._refresh_connection_summary()
+        self._append_log("SYSTEM", startup_message or "控制台就绪。先测试连接，再解除安全联锁。")
+        self._update_controls()
+
+    def _build_header(self) -> None:
+        header = ctk.CTkFrame(self, height=92, corner_radius=0, fg_color=COLORS["surface"])
+        header.grid(row=0, column=0, sticky="ew")
+        header.grid_columnconfigure(0, weight=1)
+
+        title_box = ctk.CTkFrame(header, fg_color="transparent")
+        title_box.grid(row=0, column=0, padx=28, pady=18, sticky="w")
+        ctk.CTkLabel(
+            title_box,
+            text="R730XD  /  THERMAL CONTROL",
+            text_color=COLORS["text"],
+            font=("Microsoft YaHei UI", 22, "bold"),
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            title_box,
+            text="Dell PowerEdge · iDRAC fan override console",
+            text_color=COLORS["muted"],
+            font=("Cascadia Mono", 11),
+        ).pack(anchor="w", pady=(4, 0))
+
+        self.server_chip = ctk.CTkLabel(
+            header,
+            text="●  IDRAC  SETUP REQUIRED",
+            height=36,
+            corner_radius=18,
+            fg_color=COLORS["surface_2"],
+            text_color=COLORS["cyan"],
+            font=("Cascadia Mono", 11, "bold"),
+        )
+        self.server_chip.grid(row=0, column=1, padx=28, pady=25, sticky="e")
+
+    def _build_body(self) -> None:
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.grid(row=1, column=0, padx=22, pady=18, sticky="nsew")
+        body.grid_columnconfigure(0, weight=3, minsize=280)
+        body.grid_columnconfigure(1, weight=7, minsize=0)
+        body.grid_rowconfigure(0, weight=1)
+
+        self.left_scroll = ctk.CTkScrollableFrame(
+            body,
+            corner_radius=14,
+            border_width=1,
+            border_color=COLORS["line"],
+            fg_color=COLORS["surface"],
+            scrollbar_fg_color=COLORS["surface"],
+            scrollbar_button_color=COLORS["line"],
+            scrollbar_button_hover_color=COLORS["muted"],
+            orientation="vertical",
+        )
+        self.left_scroll.grid(row=0, column=0, padx=(0, 14), sticky="nsew")
+        self._build_mode_card(self.left_scroll)
+        self._build_connection_card(self.left_scroll)
+
+        right = ctk.CTkFrame(
+            body,
+            corner_radius=14,
+            border_width=1,
+            border_color=COLORS["line"],
+            fg_color=COLORS["surface"],
+        )
+        right.grid(row=0, column=1, sticky="nsew")
+        self._build_output_card(right)
+
+    def _section_label(self, master: ctk.CTkBaseClass, text: str) -> ctk.CTkLabel:
+        return ctk.CTkLabel(
+            master,
+            text=text.upper(),
+            text_color=COLORS["muted"],
+            font=("Cascadia Mono", 10, "bold"),
+        )
+
+    def _build_mode_card(self, parent: ctk.CTkFrame) -> None:
+        section = ctk.CTkFrame(parent, fg_color="transparent")
+        section.pack(fill="x", padx=20, pady=(20, 14))
+        self._section_label(section, "01 / CONTROL MODE").pack(anchor="w")
+
+        mode_row = ctk.CTkFrame(section, fg_color="transparent")
+        mode_row.pack(fill="x", pady=(11, 12))
+        self.mode_badge = ctk.CTkLabel(
+            mode_row,
+            text="STATE UNKNOWN",
+            height=34,
+            corner_radius=7,
+            fg_color=COLORS["surface_2"],
+            text_color=COLORS["muted"],
+            font=("Cascadia Mono", 11, "bold"),
+        )
+        self.mode_badge.pack(fill="x")
+
+        self.interlock_switch = ctk.CTkSwitch(
+            section,
+            text="解除安全联锁",
+            variable=self.interlock_var,
+            command=self._update_controls,
+            progress_color=COLORS["amber"],
+            button_color=COLORS["text"],
+            text_color=COLORS["text"],
+            font=("Microsoft YaHei UI", 12, "bold"),
+        )
+        self.interlock_switch.pack(fill="x", pady=(2, 12))
+
+        self.manual_button = ctk.CTkButton(
+            section,
+            text="ENABLE MANUAL CONTROL",
+            height=42,
+            corner_radius=8,
+            fg_color=COLORS["red"],
+            hover_color=COLORS["red_hover"],
+            font=("Cascadia Mono", 11, "bold"),
+            command=self._enable_manual,
+        )
+        self.manual_button.pack(fill="x", pady=(0, 8))
+        self.action_buttons.append(self.manual_button)
+
+        self.auto_button = ctk.CTkButton(
+            section,
+            text="RESTORE AUTO THERMAL",
+            height=38,
+            corner_radius=8,
+            fg_color=COLORS["surface_2"],
+            hover_color=COLORS["line"],
+            border_width=1,
+            border_color=COLORS["line"],
+            font=("Cascadia Mono", 10, "bold"),
+            command=self._restore_auto,
+        )
+        self.auto_button.pack(fill="x")
+        self.action_buttons.append(self.auto_button)
+
+        ctk.CTkLabel(
+            section,
+            text="恢复自动温控始终可用。\n退出程序不会自动改变当前模式。",
+            justify="left",
+            text_color=COLORS["muted"],
+            font=("Microsoft YaHei UI", 10),
+        ).pack(anchor="w", pady=(12, 0))
+
+        ctk.CTkFrame(parent, height=1, fg_color=COLORS["line"]).pack(fill="x", padx=20)
+
+    def _build_connection_card(self, parent: ctk.CTkFrame) -> None:
+        section = ctk.CTkFrame(parent, fg_color="transparent")
+        section.pack(fill="both", expand=True, padx=20, pady=16)
+        self._section_label(section, "02 / CONNECTION").pack(anchor="w", pady=(0, 10))
+
+        summary = ctk.CTkFrame(
+            section,
+            corner_radius=8,
+            border_width=1,
+            border_color=COLORS["line"],
+            fg_color=COLORS["background"],
+        )
+        summary.pack(fill="x", pady=(0, 10))
+        self.connection_status_label = ctk.CTkLabel(
+            summary,
+            text="SETUP REQUIRED",
+            text_color=COLORS["amber"],
+            font=("Cascadia Mono", 12, "bold"),
+        )
+        self.connection_status_label.pack(fill="x", padx=12, pady=17)
+
+        self.settings_button = ctk.CTkButton(
+            section,
+            text="OPEN CONNECTION SETTINGS",
+            height=38,
+            corner_radius=8,
+            fg_color=COLORS["surface_2"],
+            hover_color=COLORS["line"],
+            border_width=1,
+            border_color=COLORS["line"],
+            font=("Cascadia Mono", 9, "bold"),
+            command=self._open_connection_settings,
+        )
+        self.settings_button.pack(fill="x", pady=(0, 8))
+        self.action_buttons.append(self.settings_button)
+
+        quick_actions = ctk.CTkFrame(section, fg_color="transparent")
+        quick_actions.pack(fill="x", pady=(2, 0))
+        quick_actions.grid_columnconfigure((0, 1), weight=1)
+
+        self.test_button = ctk.CTkButton(
+            quick_actions,
+            text="TEST",
+            height=32,
+            corner_radius=8,
+            fg_color=COLORS["blue"],
+            hover_color=COLORS["blue_hover"],
+            font=("Cascadia Mono", 9, "bold"),
+            command=self._test_connection,
+        )
+        self.test_button.grid(row=0, column=0, padx=(0, 4), sticky="ew")
+        self.action_buttons.append(self.test_button)
+
+        self.sensor_button = ctk.CTkButton(
+            quick_actions,
+            text="SENSORS",
+            height=32,
+            corner_radius=8,
+            fg_color=COLORS["surface_2"],
+            hover_color=COLORS["line"],
+            border_width=1,
+            border_color=COLORS["line"],
+            font=("Cascadia Mono", 9, "bold"),
+            command=self._open_sensor_monitor,
+        )
+        self.sensor_button.grid(row=0, column=1, padx=(4, 0), sticky="ew")
+        self.action_buttons.append(self.sensor_button)
+
+    def _build_output_card(self, parent: ctk.CTkFrame) -> None:
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
+        top = ctk.CTkFrame(parent, fg_color="transparent")
+        top.grid(row=0, column=0, padx=24, pady=(20, 0), sticky="ew")
+        top.grid_columnconfigure(0, weight=1)
+        self._section_label(top, "03 / FAN OUTPUT").grid(row=0, column=0, sticky="w")
+        self.output_status = ctk.CTkLabel(
+            top,
+            text="LOCKED",
+            text_color=COLORS["amber"],
+            font=("Cascadia Mono", 10, "bold"),
+        )
+        self.output_status.grid(row=0, column=1, sticky="e")
+
+        content = ctk.CTkFrame(parent, fg_color="transparent")
+        content.grid(row=1, column=0, padx=24, pady=12, sticky="nsew")
+        content.grid_columnconfigure(0, weight=1)
+        content.grid_columnconfigure(1, weight=1)
+        content.grid_rowconfigure(0, weight=1)
+
+        gauge_box = ctk.CTkFrame(content, fg_color="transparent")
+        gauge_box.grid(row=0, column=0, sticky="nsew")
+        self.gauge = FanGauge(gauge_box, self.current_speed)
+        self.gauge.pack(fill="both", expand=True)
+
+        preset_box = ctk.CTkFrame(content, fg_color="transparent")
+        preset_box.grid(row=0, column=1, sticky="nsew", padx=(16, 0))
+        preset_box.grid_columnconfigure((0, 1), weight=1)
+        ctk.CTkLabel(
+            preset_box,
+            text="QUICK PRESETS",
+            text_color=COLORS["text"],
+            font=("Cascadia Mono", 12, "bold"),
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(8, 12))
+
+        presets = ((10, "QUIET"), (15, "DAILY"), (20, "SUMMER"), (30, "LOAD"))
+        for index, (percent, label) in enumerate(presets):
+            button = ctk.CTkButton(
+                preset_box,
+                text=f"{percent:02d}%\n{label}",
+                height=74,
+                corner_radius=10,
+                fg_color=COLORS["surface_2"],
+                hover_color=COLORS["blue_hover"],
+                border_width=1,
+                border_color=COLORS["line"],
+                text_color=COLORS["text"],
+                font=("Cascadia Mono", 12, "bold"),
+                command=lambda value=percent: self._set_speed(value),
+            )
+            button.grid(
+                row=1 + index // 2,
+                column=index % 2,
+                padx=(0 if index % 2 == 0 else 6, 6 if index % 2 == 0 else 0),
+                pady=(0, 8),
+                sticky="ew",
+            )
+            self.speed_buttons.append(button)
+
+        self.custom_value = tk.IntVar(value=10)
+        self.slider_value = ctk.CTkLabel(
+            preset_box,
+            text="CUSTOM 10%",
+            text_color=COLORS["cyan"],
+            font=("Cascadia Mono", 11, "bold"),
+        )
+        self.slider_value.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 3))
+        self.speed_slider = ctk.CTkSlider(
+            preset_box,
+            from_=5,
+            to=100,
+            number_of_steps=95,
+            variable=self.custom_value,
+            command=self._slider_changed,
+            progress_color=COLORS["blue"],
+            button_color=COLORS["cyan"],
+            button_hover_color=COLORS["text"],
+        )
+        self.speed_slider.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(2, 9))
+        self.apply_button = ctk.CTkButton(
+            preset_box,
+            text="APPLY CUSTOM OUTPUT",
+            height=38,
+            corner_radius=8,
+            fg_color=COLORS["blue"],
+            hover_color=COLORS["blue_hover"],
+            font=("Cascadia Mono", 10, "bold"),
+            command=lambda: self._set_speed(int(self.custom_value.get())),
+        )
+        self.apply_button.grid(row=5, column=0, columnspan=2, sticky="ew")
+        self.speed_buttons.append(self.apply_button)
+
+        warning = ctk.CTkFrame(
+            parent,
+            corner_radius=9,
+            fg_color="#2B2113",
+            border_width=1,
+            border_color="#6C4A13",
+        )
+        warning.grid(row=2, column=0, padx=24, pady=(0, 20), sticky="ew")
+        ctk.CTkLabel(
+            warning,
+            text="THERMAL NOTE",
+            text_color=COLORS["amber"],
+            font=("Cascadia Mono", 10, "bold"),
+        ).pack(anchor="w", padx=14, pady=(10, 2))
+        ctk.CTkLabel(
+            warning,
+            text="固定低转速会削弱主板保护能力。请持续监控 CPU、内存与硬盘温度。",
+            text_color="#E8D5A8",
+            font=("Microsoft YaHei UI", 10),
+        ).pack(anchor="w", padx=14, pady=(0, 10))
+
+    def _build_log_panel(self) -> None:
+        panel = ctk.CTkFrame(
+            self,
+            height=170,
+            corner_radius=14,
+            border_width=1,
+            border_color=COLORS["line"],
+            fg_color=COLORS["surface"],
+        )
+        panel.grid(row=2, column=0, padx=22, pady=(0, 20), sticky="ew")
+        panel.grid_columnconfigure(0, weight=1)
+        self._section_label(panel, "04 / EVENT LOG").grid(
+            row=0, column=0, padx=18, pady=(12, 5), sticky="w"
+        )
+        clear = ctk.CTkButton(
+            panel,
+            text="CLEAR",
+            width=68,
+            height=26,
+            corner_radius=6,
+            fg_color="transparent",
+            hover_color=COLORS["surface_2"],
+            border_width=1,
+            border_color=COLORS["line"],
+            font=("Cascadia Mono", 9, "bold"),
+            command=lambda: self.log.delete("1.0", "end"),
+        )
+        clear.grid(row=0, column=1, padx=18, pady=(12, 5), sticky="e")
+        self.log = ctk.CTkTextbox(
+            panel,
+            height=112,
+            corner_radius=8,
+            fg_color=COLORS["background"],
+            border_width=0,
+            text_color="#BDD5E8",
+            font=("Cascadia Mono", 10),
+            activate_scrollbars=True,
+        )
+        self.log.grid(row=1, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="ew")
+
+    def _settings(self) -> IpmiSettings:
+        return IpmiSettings(
+            host=self.host_var.get().strip(),
+            username=self.user_var.get().strip(),
+            password=self.password_var.get(),
+            executable=Path(self.exe_var.get().strip()),
+        )
+
+    def _open_connection_settings(self) -> None:
+        ConnectionDialog(self)
+
+    def _open_sensor_monitor(self) -> None:
+        if self.sensor_dialog is not None and self.sensor_dialog._alive():
+            self.sensor_dialog.deiconify()
+            self.sensor_dialog.lift()
+            self.sensor_dialog.focus_force()
+            self.sensor_dialog.refresh()
+            return
+        self.sensor_dialog = SensorDialog(self)
+
+    def _request_sensor_snapshot(self, dialog: SensorDialog) -> bool:
+        if not dialog._alive():
+            return False
+        return self._submit(
+            sensor_snapshot_request(),
+            success=dialog.show_result,
+            finished=dialog.finish_loading,
+            log_stdout=False,
+        )
+
+    def _refresh_connection_summary(self) -> None:
+        configured = all(
+            (
+                self.host_var.get().strip(),
+                self.user_var.get().strip(),
+                self.password_var.get(),
+                self.exe_var.get().strip(),
+            )
+        )
+        status = "READY" if configured else "SETUP REQUIRED"
+        color = COLORS["green"] if configured else COLORS["amber"]
+        self.connection_status_label.configure(text=status, text_color=color)
+        self.server_chip.configure(text=f"●  IDRAC  {status}", text_color=color)
+
+    def _slider_changed(self, value: float) -> None:
+        percent = round(value)
+        self.slider_value.configure(text=f"CUSTOM {percent}%")
+        self.gauge.set_value(percent)
+
+    def _test_connection(self) -> None:
+        self._submit(connection_test_request(), success=self._connection_ok)
+
+    def _connection_ok(self, _result: CommandResult) -> None:
+        self.server_chip.configure(
+            text="●  IDRAC  ONLINE",
+            text_color=COLORS["green"],
+        )
+
+    def _enable_manual(self) -> None:
+        if not self.interlock_var.get():
+            self._append_log("BLOCK", "请先解除安全联锁，再关闭自动温控。")
+            return
+        self._submit(manual_mode_request(), success=self._manual_ok)
+
+    def _manual_ok(self, _result: CommandResult) -> None:
+        self.manual_mode = True
+        self.mode_badge.configure(
+            text="MANUAL OVERRIDE",
+            fg_color="#3A1A1D",
+            text_color="#FCA5A5",
+        )
+        self._update_controls()
+
+    def _restore_auto(self) -> None:
+        self._submit(auto_mode_request(), success=self._auto_ok)
+
+    def _auto_ok(self, _result: CommandResult) -> None:
+        self.manual_mode = False
+        self.interlock_var.set(False)
+        self.mode_badge.configure(
+            text="AUTO THERMAL",
+            fg_color="#102C21",
+            text_color="#86EFAC",
+        )
+        self._update_controls()
+
+    def _set_speed(self, percent: int) -> None:
+        if not self.manual_mode:
+            self._append_log("BLOCK", "必须先成功启用手动控制。")
+            return
+        if not self.interlock_var.get():
+            self._append_log("BLOCK", "安全联锁已锁定，未发送调速指令。")
+            return
+        self._submit(speed_request(percent), success=lambda result: self._speed_ok(result, percent))
+
+    def _speed_ok(self, _result: CommandResult, percent: int) -> None:
+        self.current_speed = percent
+        self.custom_value.set(percent)
+        self.slider_value.configure(text=f"CUSTOM {percent}%")
+        self.gauge.set_value(percent)
+        self.output_status.configure(text=f"ACTIVE · {percent}%", text_color=COLORS["cyan"])
+
+    def _submit(self, request, success=None, *, finished=None, log_stdout: bool = True) -> bool:
+        if self.busy:
+            self._append_log("BUSY", "已有命令正在执行，请稍候。")
+            return False
+
+        self.busy = True
+        self._update_controls()
+        self._append_log("SEND", f"{request.label}  /  {request.safe_to_log}")
+        settings = self._settings()
+
+        def worker() -> None:
+            try:
+                result = execute(settings, request)
+            except subprocess.TimeoutExpired:
+                self.after(
+                    0,
+                    lambda: self._command_failed(
+                        "连接超时，iDRAC 未在规定时间内响应。", finished
+                    ),
+                )
+            except Exception as exc:  # UI boundary: render validation/runtime errors for the user.
+                self.after(
+                    0,
+                    lambda message=str(exc): self._command_failed(message, finished),
+                )
+            else:
+                self.after(
+                    0,
+                    lambda: self._command_done(result, success, finished, log_stdout),
+                )
+
+        threading.Thread(target=worker, name="ipmi-command", daemon=True).start()
+        return True
+
+    def _command_done(self, result: CommandResult, success, finished, log_stdout: bool) -> None:
+        self.busy = False
+        try:
+            if result.ok:
+                if log_stdout:
+                    detail = (
+                        result.stdout.replace("\n", " · ")
+                        if result.stdout
+                        else "iDRAC 已接受命令"
+                    )
+                else:
+                    detail = "结果已显示在传感器窗口"
+                self._append_log(
+                    "OK", f"{result.request.label} / {detail} / {result.elapsed_seconds:.2f}s"
+                )
+                if success:
+                    success(result)
+            else:
+                detail = result.stderr or result.stdout or f"exit code {result.returncode}"
+                self._append_log("ERROR", detail.replace("\n", " · "))
+        finally:
+            if finished:
+                finished()
+            self._update_controls()
+
+    def _command_failed(self, message: str, finished=None) -> None:
+        self.busy = False
+        try:
+            self._append_log("ERROR", message)
+        finally:
+            if finished:
+                finished()
+            self._update_controls()
+
+    def _update_controls(self) -> None:
+        unlocked = self.interlock_var.get()
+        base_state = "disabled" if self.busy else "normal"
+        for button in self.action_buttons:
+            button.configure(state=base_state)
+
+        self.manual_button.configure(state="normal" if unlocked and not self.busy else "disabled")
+        speed_state = "normal" if unlocked and self.manual_mode and not self.busy else "disabled"
+        for button in self.speed_buttons:
+            button.configure(state=speed_state)
+        self.speed_slider.configure(state=speed_state)
+        self.output_status.configure(
+            text=(f"ACTIVE · {self.current_speed}%" if self.manual_mode else "LOCKED"),
+            text_color=(COLORS["cyan"] if self.manual_mode else COLORS["amber"]),
+        )
+
+    def _append_log(self, level: str, message: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log.insert("end", f"{timestamp}  [{level:<5}]  {message}\n")
+        self.log.see("end")
+
+
+def run(startup_message: str | None = None) -> None:
+    ctk.set_appearance_mode("dark")
+    ctk.set_default_color_theme("blue")
+    app = FanConsole(startup_message=startup_message)
+    app.mainloop()

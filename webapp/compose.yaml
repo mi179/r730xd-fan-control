@@ -1,0 +1,75 @@
+services:
+  r730xd-fan-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: r730xd-fan-web:0.3.1
+    container_name: r730xd-fan-web
+    restart: unless-stopped
+    init: true
+    # OpenWrt's firewall "docker" zone tracks Docker's existing bridge.  The
+    # endpoint-level MAC form is required by recent Docker engines; the legacy
+    # service-level `mac_address` may be accepted but silently ignored.
+    networks:
+      r730xd-control:
+        ipv4_address: 172.30.73.2
+        mac_address: "${WEB_CONTAINER_MAC:-02:73:0d:73:00:01}"
+    ports:
+      - "${WEB_BIND_ADDRESS:-192.168.5.2}:${WEB_PORT:-8088}:8080"
+    environment:
+      AUTH_MODE: "idrac"
+      FLASK_SECRET_KEY: "${FLASK_SECRET_KEY:?FLASK_SECRET_KEY must be set in .env}"
+      WEB_COOKIE_SECURE: "${WEB_COOKIE_SECURE:-false}"
+      REQUIRE_ORIGIN: "true"
+      TELEMETRY_CACHE_TTL: "${TELEMETRY_CACHE_TTL:-8}"
+      TELEMETRY_SAMPLE_INTERVAL: "${TELEMETRY_SAMPLE_INTERVAL:-15}"
+      HISTORY_MAX_SAMPLES: "${HISTORY_MAX_SAMPLES:-90}"
+      IDRAC_HOST: "${IDRAC_HOST:-192.168.5.151}"
+      IDRAC_MAC: "${IDRAC_MAC:?IDRAC_MAC must be set for safe discovery}"
+      IDRAC_DISCOVERY_CIDR: "${IDRAC_DISCOVERY_CIDR:?IDRAC_DISCOVERY_CIDR must be set}"
+      IDRAC_ARP_FILE: "/run/host-proc-net-arp"
+      IDRAC_ARP_INTERFACE: "${IDRAC_ARP_INTERFACE:-br-lan}"
+      IDRAC_DISCOVERY_SCAN_INTERVAL: "${IDRAC_DISCOVERY_SCAN_INTERVAL:-60}"
+      IDRAC_DISCOVERY_PROBE_TIMEOUT: "${IDRAC_DISCOVERY_PROBE_TIMEOUT:-0.8}"
+      IDRAC_DISCOVERY_MAX_HOSTS: "256"
+      IDRAC_USER: "${IDRAC_USER:-root}"
+      IDRAC_PASSWORD_FILE: "/run/secrets/idrac_password"
+      IDRAC_IPMI_PORT: "${IDRAC_IPMI_PORT:-623}"
+      IDRAC_REDFISH_PORT: "${IDRAC_REDFISH_PORT:-443}"
+      REDFISH_VERIFY_TLS: "${REDFISH_VERIFY_TLS:-false}"
+      IPMITOOL_PATH: "/usr/sbin/ipmitool"
+      TZ: "${TZ:-Asia/Shanghai}"
+    secrets:
+      - idrac_password
+    volumes:
+      # /proc/net/arp would be interpreted in the container namespace.  PID 1
+      # belongs to the OpenWrt host, so this file is the host LAN ARP table.
+      - /proc/1/net/arp:/run/host-proc-net-arp:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).read()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+secrets:
+  idrac_password:
+    file: ./secrets/idrac_password
+
+networks:
+  r730xd-control:
+    external: true
+    name: r730xd-fan-control

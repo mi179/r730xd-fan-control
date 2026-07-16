@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+.venv-win/
+.venv-wsl/
+.env
+webapp/secrets/
+.docx_review/
+.agents/
+.codex/
+dist/
+build/

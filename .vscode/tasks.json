@@ -1,0 +1,33 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Tests: WSL",
+      "type": "shell",
+      "command": "python3 -m unittest discover -s tests -v",
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Setup: Windows GUI venv",
+      "type": "shell",
+      "command": "bash scripts/setup-windows-from-wsl.sh",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run: Windows GUI",
+      "type": "shell",
+      "command": "bash scripts/run-windows-from-wsl.sh",
+      "problemMatcher": []
+    },
+    {
+      "label": "Build: Windows EXE",
+      "type": "shell",
+      "command": "bash scripts/build-windows-from-wsl.sh",
+      "problemMatcher": []
+    }
+  ]
+}
