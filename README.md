@@ -127,3 +127,16 @@ C:\ProgramData\R730xdFanConsole-<随机标识>\install-bmc.log
 python3 -m unittest discover -s tests -v
 python3 -m unittest discover -s webapp/tests -p 'test_*.py' -v
 ```
+
+## 版本与发布
+
+桌面版与 Web 版是两条产品线，**版本号各自独立演进**（D-013），不强行对齐：
+
+- 桌面版单一事实来源是 `pyproject.toml` 的 `version`（`r730xd_fan/__init__.py`
+  保持同步）；`build_windows.ps1` 从这里读取，产物自动带正确版本号。
+- Web 版单一事实来源是 `webapp/installer/VERSION`。`install.sh`、`verify.sh`、
+  `compose.offline.yaml`、`README.txt` 中的硬编码副本由 `build_openwrt_bundle.ps1`
+  在打包前逐一断言一致，漂移即拒绝构建。
+- 发布打 Git tag：桌面 `desktop-vX.Y.Z`，Web `web-vX.Y.Z`；发布说明必须写明产品线。
+- 发布前：两套测试全绿 + `python3 scripts/verify_governance.py` 通过 +
+  产物 SHA-256 记录进 `EVIDENCE.md`。

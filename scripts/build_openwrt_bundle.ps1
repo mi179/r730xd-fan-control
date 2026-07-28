@@ -11,6 +11,21 @@ $installerRoot = Join-Path $repoRoot "webapp\installer"
 $version = (Get-Content -Raw -LiteralPath (Join-Path $installerRoot "VERSION")).Trim()
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid installer VERSION: $version" }
 
+# VERSION is the single source of truth for the web line (D-013); the payload
+# files ship with hardcoded copies that must match or the bundle is refused.
+$consistencyChecks = @(
+    @{ File = "install.sh"; Pattern = "(?m)^APP_VERSION=`"$version`"$" },
+    @{ File = "verify.sh"; Pattern = "(?m)^EXPECTED_IMAGE=`"r730xd-fan-web:$version`"$" },
+    @{ File = "compose.offline.yaml"; Pattern = "(?m)^\s+image: r730xd-fan-web:$version\s*$" },
+    @{ File = "README.txt"; Pattern = "(?m)^R730xd Fan Web $version " }
+)
+foreach ($check in $consistencyChecks) {
+    $payload = Get-Content -Raw -LiteralPath (Join-Path $installerRoot $check.File)
+    if ($payload -notmatch $check.Pattern) {
+        throw "Version drift: $($check.File) does not carry VERSION $version; align it before bundling."
+    }
+}
+
 $imageSource = (Resolve-Path -LiteralPath $ImageArchivePath).Path
 $expectedImageName = "r730xd-fan-web-$version-linux-amd64.tar.gz"
 if ([IO.Path]::GetFileName($imageSource) -ne $expectedImageName) {

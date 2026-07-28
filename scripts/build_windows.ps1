@@ -1,7 +1,14 @@
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Python = Join-Path $ProjectRoot ".venv-win\Scripts\python.exe"
-$AppName = "R730xdFanConsole-AllInOne-v0.4.0"
+
+# Single source of truth for the desktop version is pyproject.toml (D-013).
+$Pyproject = Get-Content -Raw -LiteralPath (Join-Path $ProjectRoot "pyproject.toml")
+if ($Pyproject -notmatch '(?m)^version = "(\d+\.\d+\.\d+)"') {
+    throw "Cannot read desktop version from pyproject.toml"
+}
+$AppVersion = $Matches[1]
+$AppName = "R730xdFanConsole-AllInOne-v$AppVersion"
 $Output = Join-Path $ProjectRoot "dist\$AppName.exe"
 $BmcMsi = "C:\OpenManage\BMC.msi"
 

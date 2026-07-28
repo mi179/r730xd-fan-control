@@ -18,3 +18,4 @@
 | D-010 | 开发在 WSL（代码、测试、Git），GUI 在 Windows Python 运行 | CustomTkinter GUI 需要直接调用 Dell Windows 版 `ipmitool.exe` | Active | E-014 |
 | D-011 | Web 版接受局域网明文 HTTP | 公开遥测无凭据风险；控制区密码只在可信 LAN 内传输；跨不可信网络时要求前置 HTTPS 反代并设 `WEB_COOKIE_SECURE=true` | Active | E-015 |
 | D-012 | 引入 ax3000t 式治理骨架（本套文件 + 证据纪律 + 每次改动即提交） | 项目此前只有一次 Git 提交，过程记忆为零，新会话无法接手 | Active | E-001, E-002 |
+| D-013 | 桌面与 Web 是两条产品线，各自独立语义化版本，不强行统一。单一事实来源：桌面 = `pyproject.toml`（`r730xd_fan/__init__.py` 同步）；Web = `webapp/installer/VERSION`。Git tag 格式 `desktop-vX.Y.Z` / `web-vX.Y.Z`，发布说明必须注明产品线 | 两者发布节奏不同（Web 0.3.1 已发布时桌面已演进到 0.4.0），强行统一会制造无意义的版本跳跃；真正要消除的不是数字差异而是"哪个数字是真的"的不确定性 | Active | E-003, E-018 |
