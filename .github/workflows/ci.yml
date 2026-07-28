@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install "ruff>=0.6"
+      - name: Ruff check
+        run: ruff check .
+      - name: Governance self-check
+        run: python scripts/verify_governance.py
+
+  desktop-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package
+        run: pip install -e .
+      - name: Desktop unit tests
+        run: python -m unittest discover -s tests -v
+
+  webapp-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install webapp dependencies
+        run: pip install -r webapp/requirements.txt
+      - name: Web unit tests
+        run: python -m unittest discover -s webapp/tests -p "test_*.py" -v

@@ -5,7 +5,6 @@ from pathlib import Path
 from tkinter import messagebox
 
 from r730xd_fan.dependency import (
-    DependencyInstallError,
     ensure_ipmitool_available,
     install_bmc_elevated,
 )
@@ -40,7 +39,7 @@ if __name__ == "__main__":
             raise SystemExit(install_bmc_elevated())
         except Exception:
             write_startup_error()
-            raise SystemExit(1)
+            raise SystemExit(1) from None
     try:
         dependency = ensure_ipmitool_available()
     except Exception as exc:

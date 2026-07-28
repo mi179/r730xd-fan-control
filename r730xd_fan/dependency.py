@@ -14,7 +14,6 @@ from pathlib import Path
 
 from .config import discover_ipmitool
 
-
 BMC_MSI_NAME = "BMC.msi"
 BMC_MSI_SHA256 = "13F2179F622A0AB536B2FA26772AC2E05B5F95993C15A45DD99429F20EC09E15"
 SEE_MASK_NOCLOSEPROCESS = 0x00000040
@@ -139,7 +138,9 @@ def ensure_ipmitool_available() -> DependencyResult:
         if exit_code in {1641, 3010}:
             raise DependencyInstallError("Dell BMC 已安装，但需要重启 Windows 后才能使用。")
         raise DependencyInstallError("安装已结束，但仍未找到 ipmitool.exe。")
-    return DependencyResult(installed, installed_now=True, restart_required=exit_code in {1641, 3010})
+    return DependencyResult(
+        installed, installed_now=True, restart_required=exit_code in {1641, 3010}
+    )
 
 
 def install_bmc_elevated() -> int:
@@ -189,7 +190,9 @@ def system_executable(name: str) -> Path:
     buffer = ctypes.create_unicode_buffer(32768)
     length = _get_system_directory(buffer, len(buffer))
     if length == 0 or length >= len(buffer):
-        raise DependencyInstallError(f"无法解析 Windows System32 目录，错误 {ctypes.get_last_error()}。")
+        raise DependencyInstallError(
+            f"无法解析 Windows System32 目录，错误 {ctypes.get_last_error()}。"
+        )
     executable = Path(buffer.value) / name
     if not executable.is_file():
         raise DependencyInstallError(f"找不到 Windows 系统程序：{executable}")
@@ -203,7 +206,9 @@ def program_data_directory() -> Path:
     buffer = ctypes.create_unicode_buffer(32768)
     size = wintypes.DWORD(len(buffer))
     if not _get_all_users_profile_directory(buffer, ctypes.byref(size)):
-        raise DependencyInstallError(f"无法解析 Windows ProgramData 目录，错误 {ctypes.get_last_error()}。")
+        raise DependencyInstallError(
+            f"无法解析 Windows ProgramData 目录，错误 {ctypes.get_last_error()}。"
+        )
     directory = Path(buffer.value)
     if not directory.is_absolute() or not directory.is_dir():
         raise DependencyInstallError(f"Windows 返回了无效的 ProgramData 目录：{directory}")
@@ -325,7 +330,9 @@ def _run_elevated_self() -> int:
         if wait_result == WAIT_TIMEOUT:
             raise DependencyInstallError("Dell 安装超过 15 分钟，安装进程可能仍在后台运行。")
         if wait_result == WAIT_FAILED:
-            raise DependencyInstallError(f"等待安装进程失败，Windows 错误 {ctypes.get_last_error()}。")
+            raise DependencyInstallError(
+                f"等待安装进程失败，Windows 错误 {ctypes.get_last_error()}。"
+            )
         if wait_result != WAIT_OBJECT_0:
             raise DependencyInstallError(f"等待安装进程返回异常状态：{wait_result}。")
 
@@ -384,7 +391,9 @@ def _acquire_install_mutex() -> wintypes.HANDLE:
     ctypes.set_last_error(0)
     handle = _create_mutex(None, True, MUTEX_NAME)
     if not handle:
-        raise DependencyInstallError(f"无法创建安装互斥锁，Windows 错误 {ctypes.get_last_error()}。")
+        raise DependencyInstallError(
+            f"无法创建安装互斥锁，Windows 错误 {ctypes.get_last_error()}。"
+        )
     if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
         wait_result = _wait_for_single_object(handle, INSTALL_TIMEOUT_MS)
         if wait_result != WAIT_OBJECT_0:

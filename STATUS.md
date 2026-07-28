@@ -19,7 +19,7 @@ Last updated: 2026-07-28（治理骨架建立日）
 | 一体 EXE（含 BMC 自动安装） | 已构建，本地 dist，哈希见 E-004 |
 | Web 版（`webapp/`） | 完成，v0.3.1 已部署到 WRT |
 | Docker 离线安装包 | 已构建并发布（GitHub Releases） |
-| 测试 | 两套 unittest 存在（E-016），无 CI 自动执行 |
+| 测试 | 两套 unittest 存在（E-016），CI 于 2026-07-28 建立（E-017） |
 | 治理文件 | 2026-07-28 建立 |
 
 ## 环境事实（改动前先核对，可能已变化）
@@ -37,8 +37,9 @@ Last updated: 2026-07-28（治理骨架建立日）
 按优先级见 [TASKS.md](TASKS.md)。最紧要的三件：
 
 - **T-001** —— 从此每次有意义的改动单独提交，提交信息带 D/E/T 编号。
-- **T-002** —— 补一个最小 CI workflow（两套 unittest + ruff），`.github/workflows/` 目前为空。
 - **T-003** —— 明确桌面版与 Web 版的版本号策略，消除 0.4.0/0.3.1 漂移（E-003）。
+- **T-004** —— 固化发布流程：发布前跑两套测试 + 产物 SHA-256 入 EVIDENCE.md。
+- （T-002 CI 已于 2026-07-28 完成，见 E-017。）
 
 ## Things that will waste your time if you forget them
 
@@ -54,6 +55,8 @@ Last updated: 2026-07-28（治理骨架建立日）
 
 ## Open risks
 
-- **无 CI**：发布前靠人记得跑两套测试（T-002）。
+- **~~无 CI~~ → 已缓解 2026-07-28**：`.github/workflows/ci.yml` 三个 job（ruff+治理自检 /
+  windows 桌面测试 / ubuntu Web 测试）已建立（T-002）；首次运行绿不绿待推送后确认，
+  且 GUI 测试在 windows runner 的无头会话下能否建 Tk 窗口是唯一的未知数。
 - **版本漂移**：桌面 0.4.0 / Web 0.3.1，发布说明容易写错（T-003）。
 - **LAN HTTP**：控制区密码在可信 LAN 内明文传输（D-011 已接受；跨不可信网络需 T-005 的 HTTPS 反代文档）。

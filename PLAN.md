@@ -11,7 +11,7 @@
 
 ## Phase 1 — 工程基础
 
-- [ ] T-002 最小 CI（两套 unittest + ruff）
+- [x] T-002 最小 CI（两套 unittest + ruff + 治理自检）—— 2026-07-28 完成（E-017）
 - [ ] T-003 版本号策略
 - [ ] T-004 发布流程固化（测试 → 打包 → 哈希入 EVIDENCE → Release）
 

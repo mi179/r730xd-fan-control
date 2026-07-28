@@ -5,7 +5,6 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-
 DEFAULT_HOST = "192.168.5.151"
 DEFAULT_USER = "root"
 
@@ -63,7 +62,7 @@ class IpmiSettings:
     timeout_seconds: int = 15
 
     @classmethod
-    def from_environment(cls) -> "IpmiSettings":
+    def from_environment(cls) -> IpmiSettings:
         return cls(
             host=os.getenv("IDRAC_HOST", DEFAULT_HOST).strip(),
             username=os.getenv("IDRAC_USER", DEFAULT_USER).strip(),

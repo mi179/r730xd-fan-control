@@ -21,7 +21,6 @@ from .ipmi import (
     speed_request,
 )
 
-
 COLORS = {
     "background": "#07111F",
     "surface": "#0D1B2A",
@@ -139,7 +138,7 @@ class FanGauge(ctk.CTkFrame):
 
 
 class ConnectionDialog(ctk.CTkToplevel):
-    def __init__(self, owner: "FanConsole") -> None:
+    def __init__(self, owner: FanConsole) -> None:
         super().__init__(owner, fg_color=COLORS["background"])
         self.owner = owner
         self.title("iDRAC Connection Settings")
@@ -300,7 +299,7 @@ class SensorDialog(ctk.CTkToplevel):
         "SYSTEM": 5,
     }
 
-    def __init__(self, owner: "FanConsole") -> None:
+    def __init__(self, owner: FanConsole) -> None:
         super().__init__(owner, fg_color=COLORS["background"])
         self.owner = owner
         self.title("iDRAC Sensor Monitor")

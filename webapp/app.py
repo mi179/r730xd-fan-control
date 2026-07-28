@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import hmac
@@ -14,18 +13,18 @@ import threading
 import time
 import warnings
 from collections import defaultdict, deque
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
 from flask import Flask, jsonify, redirect, render_template, request, session
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 from werkzeug.security import check_password_hash
-
 
 MANUAL_MODE_RAW = ("raw", "0x30", "0x30", "0x01", "0x00")
 AUTO_MODE_RAW = ("raw", "0x30", "0x30", "0x01", "0x01")
@@ -849,7 +848,8 @@ class Backend:
                 "error": _safe_exception(exc, config.password),
             }
         with self.state.lock:
-            if revision == self.state.config_revision and self.state.deep_scan.get("job_id") == job_id:
+            revision_match = revision == self.state.config_revision
+            if revision_match and self.state.deep_scan.get("job_id") == job_id:
                 self.state.deep_scan = completed
 
 
