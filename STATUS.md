@@ -55,8 +55,8 @@ Last updated: 2026-07-28（治理骨架建立日）
 
 ## Open risks
 
-- **~~无 CI~~ → 已缓解 2026-07-28**：`.github/workflows/ci.yml` 三个 job（ruff+治理自检 /
-  windows 桌面测试 / ubuntu Web 测试）已建立（T-002）；首次运行绿不绿待推送后确认，
-  且 GUI 测试在 windows runner 的无头会话下能否建 Tk 窗口是唯一的未知数。
+- **~~无 CI~~ → 已关闭 2026-07-28**：`.github/workflows/ci.yml` 三个 job（ruff+治理自检 /
+  windows 桌面测试 / ubuntu Web 测试）首次运行全部 success，windows runner 无头会话下
+  GUI 测试正常（T-002, E-017）。
 - **版本漂移**：桌面 0.4.0 / Web 0.3.1，发布说明容易写错（T-003）。
 - **LAN HTTP**：控制区密码在可信 LAN 内明文传输（D-011 已接受；跨不可信网络需 T-005 的 HTTPS 反代文档）。

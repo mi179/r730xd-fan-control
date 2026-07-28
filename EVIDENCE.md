@@ -20,7 +20,7 @@
 | E-014 | WSL 开发、Windows 运行 | `README.md`“VS Code + WSL 开发”；`scripts/*-from-wsl.sh` 三个脚本 | 回溯 |
 | E-015 | LAN HTTP 边界与 HTTPS 反代要求 | `webapp/README.md` 引用块（`WEB_COOKIE_SECURE`） | 回溯 |
 | E-016 | 测试存在且分两套：桌面 `tests/`（dependency/ipmi/ui_startup）与 Web `webapp/tests/`（含对部署实例的无损 live smoke） | `tests/test_*.py`、`webapp/tests/` 目录与 `live_smoke.py` 文件头注释 | 2026-07-28 |
-| E-017 | CI 建立前仓库存在 21 个 ruff 违规（6 E501 / 6 I001 / 2 F401 等），其中 15 个自动修复、6 个手工修复（含 `main.py` 的 B904 与 `webapp/app.py:851` 的超长行）；修复后桌面 15 + Web 31 测试在 `.venv-win` 下全部通过 | `ruff check .` 输出、`git diff`、unittest 运行记录，2026-07-28 实测 | 2026-07-28 |
+| E-017 | CI 建立前仓库存在 21 个 ruff 违规（6 E501 / 6 I001 / 2 F401 等），其中 15 个自动修复、6 个手工修复（含 `main.py` 的 B904 与 `webapp/app.py:851` 的超长行）；修复后桌面 15 + Web 31 测试在 `.venv-win` 下全部通过。推送后首次 CI 运行（run 30328857518）lint / desktop-tests / webapp-tests 三 job 全部 success，证明 windows runner 无头会话可正常创建 Tk 窗口 | `ruff check .` 输出、unittest 运行记录、GitHub Actions API 查询结果，2026-07-28 实测 | 2026-07-28 |
 
 ## 外部原始资料（不进仓库）
 
