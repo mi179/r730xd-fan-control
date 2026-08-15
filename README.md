@@ -28,8 +28,8 @@
 
 从 [GitHub Releases](https://github.com/mi179/r730xd-fan-control/releases) 下载并放在同一目录：
 
-- `R730xdFan-Web-Docker-v0.3.1.tar.gz`
-- `R730xdFan-Web-Docker-v0.3.1.tar.gz.sha256`
+- `R730xdFan-Web-Docker-v0.4.0.tar.gz`
+- `R730xdFan-Web-Docker-v0.4.0.tar.gz.sha256`
 - `Install-R730xdFan-Web.ps1`
 
 在 Windows PowerShell 执行：

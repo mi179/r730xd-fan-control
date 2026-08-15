@@ -1,4 +1,4 @@
-R730xd Fan Web 0.3.1 — OpenWrt x86_64 离线安装包
+R730xd Fan Web 0.4.0 — OpenWrt x86_64 离线安装包
 =================================================
 
 这个包不需要联网构建。它已经包含经过实机验证的 linux/amd64 Docker 镜像，
@@ -21,10 +21,10 @@ iDRAC 网卡 MAC，换服务器或换网段时输入对应的新值。
 直接安装
 --------
 
-1. 把整个解压目录复制到 WRT，例如 /tmp/R730xdFan-Web-Docker-v0.3.1。
+1. 把整个解压目录复制到 WRT，例如 /tmp/R730xdFan-Web-Docker-v0.4.0。
 2. SSH 登录 WRT 后执行：
 
-   cd /tmp/R730xdFan-Web-Docker-v0.3.1
+   cd /tmp/R730xdFan-Web-Docker-v0.4.0
    sh install.sh
 
 3. 首次安装会要求隐藏输入 iDRAC 密码。升级时默认保留原密码。

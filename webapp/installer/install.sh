@@ -4,7 +4,7 @@
 set -eu
 umask 077
 
-APP_VERSION="0.3.1"
+APP_VERSION="0.4.0"
 IMAGE_NAME="r730xd-fan-web:${APP_VERSION}"
 IMAGE_ARCHIVE_REL="images/r730xd-fan-web-${APP_VERSION}-linux-amd64.tar.gz"
 APP_DIR="${R730XD_APP_DIR:-/opt/r730xd-fan-web}"

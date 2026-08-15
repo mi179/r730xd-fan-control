@@ -1,6 +1,6 @@
 services:
   r730xd-fan-web:
-    image: r730xd-fan-web:0.3.1
+    image: r730xd-fan-web:0.4.0
     container_name: r730xd-fan-web
     restart: unless-stopped
     init: true

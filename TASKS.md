@@ -14,6 +14,6 @@
 | T-011 | 完整 SDR 对匿名开放 + 触发冷却；传感器中文注解；等宽字体收敛 | **Done 2026-08-15**（D-016, D-017, E-024, E-025） | D-016, D-017 |
 | T-012 | 在 WRT 上取 iDRAC 证书指纹并填入 `.env` 的 `REDFISH_TLS_FINGERPRINT`（关闭 Redfish 凭据 MITM 路径） | Backlog（D-021 接受风险，不阻塞上线）—— 代价极低：一条 openssl 命令 + 重启 | D-018, D-021 |
 | T-013 | 部署 HTTPS 反代并设 `WEB_COOKIE_SECURE=true` / `TRUSTED_ORIGINS`；同时处理反代后 `REMOTE_ADDR` 塌缩导致限速退化为全局桶的问题（ProxyFix 或共享网络命名空间） | Backlog（D-021 接受风险，不阻塞上线） | D-011, D-019, D-021 |
-| T-010 | 部署新版 Web 到 WRT：需重建镜像（Dockerfile 新增 `/data`）并首次创建 `r730xd-telemetry` volume | Open | D-015 |
+| T-010 | 部署 Web v0.4.0 到 WRT：镜像在 WRT 上原生构建（Windows 侧已无 Docker daemon），`docker save` 回传后仍走 `build_openwrt_bundle.ps1` + `install.sh` 正规流程，保留备份/哈希/回滚/verify | Open | D-013, D-015 |
 
 关闭任务时把状态改为 Done + 日期，不删除行。
