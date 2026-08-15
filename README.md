@@ -1,7 +1,8 @@
 # R730xd Thermal Control Console
 
-一套面向 Dell PowerEdge R730xd 的 iDRAC 风扇控制 GUI。界面采用宝玉 `blueprint`
-设计语言：工程网格、冷蓝主色、琥珀告警和清晰的操作层级。
+一套面向 Dell PowerEdge R730xd 的 iDRAC 风扇控制 GUI，桌面版与手机 Web 版共用同一套
+设计语言：**近黑单色界面，颜色只用来表示报警**——琥珀 = warning，红 = critical，其余
+部分不使用饱和色（D-014）。异常传感器以横幅置顶，正常时完全不占位。
 
 ## 安全设计
 
@@ -18,8 +19,9 @@
 
 ## WRT 手机 Web 版
 
-`webapp/` 是独立的 OpenWrt Docker 版本：访客无需密码即可查看温度、功耗、
-风扇 RPM 和短期趋势；只有调速与管理操作需要同一套 iDRAC 凭据。部署、安全
+`webapp/` 是独立的 OpenWrt Docker 版本：访客无需密码即可查看温度、功耗、风扇 RPM、
+每个传感器的明细读数和趋势（5 分钟 / 1 小时 / 6 小时 / 24 小时）；只有调速与管理操作
+需要同一套 iDRAC 凭据。遥测历史落 SQLite，容器重启不清零（D-015）。部署、安全
 边界、Docker secret 与回滚方法见 [webapp/README.md](webapp/README.md)。
 
 ### Docker 离线一键安装
