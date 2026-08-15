@@ -1,0 +1,24 @@
+# This repo is developed on Windows but a large part of it is executed on
+# OpenWrt: installer/rollback shell scripts, the Dockerfile, compose files and
+# everything copied into the Linux container. A CRLF that reaches those files
+# is not a cosmetic issue — `#!/bin/sh` followed by a CR makes the interpreter
+# fail outright on the router. `core.autocrlf=true` normalises on commit but
+# still hands CRLF back on checkout, so pin the working-tree endings here.
+
+* text=auto eol=lf
+
+# Windows-only entry points keep native endings.
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Never touch binary payloads.
+*.png   binary
+*.ico   binary
+*.pdf   binary
+*.exe   binary
+*.msi   binary
+*.gz    binary
+*.tar   binary
+*.zip   binary
+*.webp  binary
