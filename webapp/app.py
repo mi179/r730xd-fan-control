@@ -7,6 +7,7 @@ import re
 import secrets
 import select
 import shutil
+import signal
 import socket
 import sqlite3
 import subprocess
@@ -36,6 +37,7 @@ HOST_PATTERN = re.compile(
 )
 MAC_PATTERN = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$")
 ARP_FILE_LIMIT = 512 * 1024
+SIGSEGV_RETURNCODES = {-signal.SIGSEGV, 128 + signal.SIGSEGV}
 
 
 def _utc_now() -> str:
@@ -1079,9 +1081,17 @@ class Backend:
         completed: dict[str, Any]
         try:
             result = self.ipmi.run(config, ("sdr", "elist", "all"), timeout=60)
-            if not result.ok:
-                raise ApiError(502, "deep_scan_failed", "完整传感器扫描失败")
             records = _parse_sdr_records(result.stdout)
+            # ipmitool 1.8.19 segfaults partway through the SDR walk on this
+            # iDRAC8 (firmware 2.70): it prints most records, then dies with
+            # SIGSEGV. Everything it printed before dying is real sensor data,
+            # and discarding it would both hide usable readings and invite the
+            # operator to retry — and each crashed run leaks an IPMI session
+            # until the BMC's session table is exhausted. So keep what arrived
+            # and label it, instead of failing and being retried.
+            partial = result.returncode in SIGSEGV_RETURNCODES and bool(records)
+            if not result.ok and not partial:
+                raise ApiError(502, "deep_scan_failed", "完整传感器扫描失败")
             completed = {
                 "job_id": job_id,
                 "status": "complete",
@@ -1090,6 +1100,8 @@ class Backend:
                     "records": records,
                     "summary": _summarise_records(records),
                     "elapsed_seconds": result.elapsed_seconds,
+                    "partial": partial,
+                    "partial_reason": "ipmitool_sigsegv" if partial else None,
                 },
             }
         except Exception as exc:

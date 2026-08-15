@@ -122,6 +122,7 @@
     trendHover: null,
     trendGeometry: null,
     sensorSort: { key: "", direction: 1 },
+    sensorsPartial: false,
   };
 
   class ApiError extends Error {
@@ -1435,7 +1436,8 @@
     }
     dom.sensorTableBody.replaceChildren(fragment);
     if (state.allSensors.length) {
-      dom.sensorDialogMeta.textContent = `显示 ${filtered.length} / ${state.allSensors.length} 条记录`;
+      const suffix = state.sensorsPartial ? " · 部分结果，iDRAC 未返回完整 SDR" : "";
+      dom.sensorDialogMeta.textContent = `显示 ${filtered.length} / ${state.allSensors.length} 条记录${suffix}`;
     }
   }
 
@@ -1443,8 +1445,13 @@
     const result = payload?.result || payload || {};
     const records = result.records || result.sensors || result.items || (Array.isArray(result) ? result : []);
     state.allSensors = Array.isArray(records) ? records.map(normalizeSensor) : [];
+    state.sensorsPartial = Boolean(result.partial);
     renderSensorRows();
-    addLog("OK", `全部传感器读取完成，共 ${state.allSensors.length} 条`);
+    if (state.sensorsPartial) {
+      addLog("WARN", `传感器读取不完整，共 ${state.allSensors.length} 条（ipmitool 在遍历途中退出）`);
+    } else {
+      addLog("OK", `全部传感器读取完成，共 ${state.allSensors.length} 条`);
+    }
   }
 
   function csvCell(value) {

@@ -39,6 +39,7 @@ class FakeIpmi:
     def __init__(self) -> None:
         self.calls: list[tuple[tuple[str, ...], ConnectionConfig, float | None]] = []
         self.lock = threading.Lock()
+        self.deep_scan_result: CommandResult | None = None
 
     def run(
         self,
@@ -48,6 +49,8 @@ class FakeIpmi:
     ) -> CommandResult:
         with self.lock:
             self.calls.append((tuple(arguments), config, timeout))
+        if tuple(arguments) == ("sdr", "elist", "all") and self.deep_scan_result:
+            return self.deep_scan_result
         if tuple(arguments) == ("mc", "info"):
             stdout = "Device ID : 32\nManufacturer Name : DELL Inc."
         elif tuple(arguments) == ("sdr", "type", "Temperature"):
@@ -422,6 +425,58 @@ class WebBackendTests(unittest.TestCase):
         self.assertEqual(data["status"], "complete")
         self.assertEqual(data["result"]["summary"]["total"], 3)
         self.assertIn(("sdr", "elist", "all"), [call[0] for call in self.ipmi.calls])
+
+    def test_deep_scan_keeps_records_when_ipmitool_dies_with_sigsegv(self) -> None:
+        output = (
+            "Inlet Temp | 01h | ok | 7.1 | 24 degrees C\n"
+            "Fan1 RPM | 30h | ok | 7.1 | 4080 RPM"
+        )
+        for returncode in (-11, 139):
+            with self.subTest(returncode=returncode):
+                self.ipmi.deep_scan_result = CommandResult(
+                    returncode, output, "Segmentation fault", 0.05
+                )
+                started = self.client.post(
+                    "/api/sensors/deep-scan", json={}, headers=self.headers
+                )
+                self.assertEqual(started.status_code, 202)
+                self.wait_for(
+                    lambda: self.backend.state.deep_scan.get("status") != "running"
+                )
+                data = self.client.get("/api/sensors/deep-scan").get_json()["data"]
+                self.assertEqual(data["status"], "complete")
+                self.assertEqual(data["result"]["summary"]["total"], 2)
+                self.assertTrue(data["result"]["partial"])
+                self.assertEqual(
+                    data["result"]["partial_reason"], "ipmitool_sigsegv"
+                )
+
+    def test_deep_scan_does_not_mask_other_nonzero_exits(self) -> None:
+        self.ipmi.deep_scan_result = CommandResult(
+            1,
+            "Inlet Temp | 01h | ok | 7.1 | 24 degrees C",
+            "authentication failed",
+            0.05,
+        )
+        started = self.client.post(
+            "/api/sensors/deep-scan", json={}, headers=self.headers
+        )
+        self.assertEqual(started.status_code, 202)
+        self.wait_for(lambda: self.backend.state.deep_scan.get("status") != "running")
+        data = self.client.get("/api/sensors/deep-scan").get_json()["data"]
+        self.assertEqual(data["status"], "error")
+
+    def test_deep_scan_requires_records_even_after_sigsegv(self) -> None:
+        self.ipmi.deep_scan_result = CommandResult(
+            -11, "", "Segmentation fault", 0.05
+        )
+        started = self.client.post(
+            "/api/sensors/deep-scan", json={}, headers=self.headers
+        )
+        self.assertEqual(started.status_code, 202)
+        self.wait_for(lambda: self.backend.state.deep_scan.get("status") != "running")
+        data = self.client.get("/api/sensors/deep-scan").get_json()["data"]
+        self.assertEqual(data["status"], "error")
 
     def test_config_response_never_contains_password(self) -> None:
         response = self.client.get("/api/config")
