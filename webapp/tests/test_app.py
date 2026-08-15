@@ -3,12 +3,14 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -24,6 +26,11 @@ from app import (  # noqa: E402
     ConnectionConfig,
     IpmiRunner,
     MacAddressDiscovery,
+    TelemetryStore,
+    _FingerprintAdapter,
+    _login_rate_key,
+    _normalise_fingerprint,
+    _redfish_client_from_environment,
     create_app,
 )
 
@@ -203,10 +210,55 @@ class WebBackendTests(unittest.TestCase):
             ).status_code,
             401,
         )
-        self.assertEqual(
-            anonymous.post("/api/sensors/deep-scan", json={}).status_code, 401
+        # The SDR repository is read-only sensor telemetry of the same class the
+        # anonymous dashboard already publishes, so reading it needs no login.
+        # Writes to the machine above still do.
+        self.assertIn(anonymous.get("/api/sensors/deep-scan").status_code, (200, 202))
+        self.assertIn(
+            anonymous.post("/api/sensors/deep-scan", json={}).status_code, (200, 202)
         )
-        self.assertEqual(anonymous.get("/api/sensors/deep-scan").status_code, 401)
+
+    def test_anonymous_deep_scan_is_rate_limited_but_operators_are_not(self) -> None:
+        app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "deep-scan-cooldown",
+                "AUTH_MODE": "static",
+                "WEB_USERNAME": "admin",
+                "WEB_PASSWORD": "correct horse",
+                "REQUIRE_ORIGIN": False,
+                "DEEP_SCAN_MIN_INTERVAL": 3600,
+            },
+            ipmi_runner=FakeIpmi(),
+            redfish_get=FakeRedfish(),
+        )
+        backend = app.extensions["r730xd_backend"]
+        backend.state.config = configured_connection()
+
+        anonymous = app.test_client()
+        first = anonymous.post("/api/sensors/deep-scan", json={})
+        self.assertIn(first.status_code, (200, 202))
+
+        # `sdr elist all` is a heavy walk against a resource-constrained iDRAC8.
+        # A second anonymous request inside the window must reuse the result
+        # rather than start another walk.
+        second = anonymous.post("/api/sensors/deep-scan", json={})
+        self.assertEqual(second.status_code, 200)
+        self.assertTrue(second.get_json()["data"]["throttled"])
+
+        operator = app.test_client()
+        login = operator.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "correct horse"},
+        )
+        self.assertEqual(login.status_code, 200)
+        allowed = operator.post(
+            "/api/sensors/deep-scan",
+            json={},
+            headers={"X-CSRF-Token": login.get_json()["data"]["csrf_token"]},
+        )
+        self.assertIn(allowed.status_code, (200, 202))
+        self.assertNotIn("throttled", allowed.get_json()["data"])
 
     def test_static_login_failure_remains_rate_safe(self) -> None:
         anonymous = self.app.test_client()
@@ -1089,6 +1141,429 @@ class IdracAuthenticationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(redfish.calls, [])
         self.assertNotIn("secret-from-file", response.get_data(as_text=True))
+
+
+def _self_signed_https_server():
+    """A throwaway TLS server that records whether it ever saw credentials."""
+
+    import hashlib
+    import http.server
+    import socketserver
+    import ssl
+    from datetime import timedelta as _timedelta
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    now = datetime.now(UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - _timedelta(days=1))
+        .not_valid_after(now + _timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    der = certificate.public_bytes(serialization.Encoding.DER)
+    fingerprint = hashlib.sha256(der).hexdigest()
+
+    directory = tempfile.mkdtemp()
+    cert_path = Path(directory) / "cert.pem"
+    cert_path.write_bytes(
+        certificate.public_bytes(serialization.Encoding.PEM)
+        + key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+    )
+
+    seen: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            header = self.headers.get("Authorization")
+            if header:
+                seen.append(header)
+            body = b'{"ok": true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: Any) -> None:
+            return
+
+    class QuietServer(socketserver.TCPServer):
+        daemon_threads = True
+
+        def handle_error(self, request, client_address) -> None:
+            # A client that rejects the pin drops the connection mid-handshake.
+            # That is the behaviour under test, not a server fault, so keep it
+            # out of the test output.
+            return
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert_path)
+    server = QuietServer(("127.0.0.1", 0), Handler)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    server.received_authorization = seen
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, fingerprint
+
+
+class PublicSurfaceInvariantTests(unittest.TestCase):
+    """The one invariant the whole security model rests on.
+
+    Every route is either read-only-and-public or it changes the machine and
+    needs iDRAC credentials. That split currently holds, but nothing stopped a
+    future change from quietly moving a write onto the public side, so assert
+    it behaviourally: drive every public route anonymously and prove no IPMI
+    write command reaches the BMC.
+    """
+
+    WRITE_PREFIXES = (("raw", "0x30", "0x30", "0x01"), ("raw", "0x30", "0x30", "0x02"))
+
+    def _app(self):
+        app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "public-surface-invariant",
+                "AUTH_MODE": "static",
+                "WEB_USERNAME": "admin",
+                "WEB_PASSWORD": "correct horse",
+                "REQUIRE_ORIGIN": False,
+                "DEEP_SCAN_MIN_INTERVAL": 0,
+            },
+            ipmi_runner=self.ipmi,
+            redfish_get=FakeRedfish(),
+        )
+        app.extensions["r730xd_backend"].state.config = configured_connection()
+        return app
+
+    def setUp(self) -> None:
+        self.ipmi = FakeIpmi()
+
+    def _public_rules(self, app):
+        public = []
+        for rule in app.url_map.iter_rules():
+            if rule.endpoint == "static":
+                continue
+            view = app.view_functions[rule.endpoint]
+            # login_required wraps the view; the wrapper keeps __wrapped__.
+            if getattr(view, "__wrapped__", None) is not None:
+                continue
+            for method in sorted(rule.methods - {"HEAD", "OPTIONS"}):
+                public.append((method, str(rule.rule)))
+        return public
+
+    def test_no_public_route_can_issue_an_ipmi_write(self) -> None:
+        app = self._app()
+        client = app.test_client()
+        public = self._public_rules(app)
+        self.assertGreater(len(public), 5, "public surface unexpectedly empty")
+
+        for method, path in public:
+            with self.subTest(route=f"{method} {path}"):
+                if method == "GET":
+                    client.get(path)
+                else:
+                    client.post(path, json={})
+
+        time.sleep(0.4)  # let any background deep-scan / telemetry thread finish
+        writes = [
+            args
+            for args, _config, _timeout in self.ipmi.calls
+            if args[:4] in self.WRITE_PREFIXES
+        ]
+        self.assertEqual(
+            writes,
+            [],
+            f"a public route issued an IPMI write to the BMC: {writes}",
+        )
+
+    def test_every_machine_write_route_is_credential_gated(self) -> None:
+        app = self._app()
+        gated = {
+            str(rule.rule)
+            for rule in app.url_map.iter_rules()
+            if rule.endpoint != "static"
+            and getattr(app.view_functions[rule.endpoint], "__wrapped__", None)
+            is not None
+        }
+        for path in ("/api/control/manual", "/api/control/auto", "/api/control/speed"):
+            self.assertIn(path, gated, f"{path} changes the machine and must be gated")
+
+
+class LoginRateKeyTests(unittest.TestCase):
+    def test_attempts_are_bucketed_by_network_not_by_address(self) -> None:
+        # Handing yourself another address on a LAN is free, so a per-address
+        # budget was not a budget at all.
+        self.assertEqual(
+            _login_rate_key("192.168.5.10"), _login_rate_key("192.168.5.200")
+        )
+        self.assertNotEqual(
+            _login_rate_key("192.168.5.10"), _login_rate_key("192.168.6.10")
+        )
+        self.assertEqual(_login_rate_key(None), "unknown")
+        self.assertEqual(_login_rate_key("not-an-ip"), "not-an-ip")
+
+    def test_rotating_addresses_inside_one_subnet_cannot_reset_the_budget(self) -> None:
+        app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "login-rate-subnet",
+                "AUTH_MODE": "static",
+                "WEB_USERNAME": "admin",
+                "WEB_PASSWORD": "correct horse",
+                "REQUIRE_ORIGIN": False,
+            },
+            ipmi_runner=FakeIpmi(),
+            redfish_get=FakeRedfish(),
+        )
+        client = app.test_client()
+        statuses = [
+            client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": f"wrong-{index}"},
+                environ_base={"REMOTE_ADDR": f"192.168.5.{20 + index}"},
+            ).status_code
+            for index in range(7)
+        ]
+        self.assertEqual(statuses[:5], [401] * 5)
+        self.assertEqual(statuses[5:], [429, 429])
+
+        # A different /24 keeps its own budget.
+        other = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "wrong"},
+            environ_base={"REMOTE_ADDR": "192.168.9.5"},
+        )
+        self.assertEqual(other.status_code, 401)
+
+
+class RedfishFingerprintPinningTests(unittest.TestCase):
+    FINGERPRINT = "ab" * 32
+
+    def test_accepts_colon_separated_and_bare_hex(self) -> None:
+        colons = ":".join("ab" for _ in range(32)).upper()
+        self.assertEqual(_normalise_fingerprint(colons), self.FINGERPRINT)
+        self.assertEqual(_normalise_fingerprint(self.FINGERPRINT), self.FINGERPRINT)
+
+    def test_rejects_anything_that_is_not_sha256(self) -> None:
+        for bad in ("", "deadbeef", "zz" * 32, "ab" * 31, "ab" * 33):
+            with self.subTest(value=bad), self.assertRaises(RuntimeError):
+                _normalise_fingerprint(bad)
+
+    def test_client_pins_the_certificate_when_configured(self) -> None:
+        with patch.dict(os.environ, {"REDFISH_TLS_FINGERPRINT": self.FINGERPRINT}):
+            client = _redfish_client_from_environment()
+        adapter = client.__self__.get_adapter("https://192.168.5.151/redfish/v1")
+        self.assertIsInstance(adapter, _FingerprintAdapter)
+        self.assertEqual(
+            adapter.poolmanager.connection_pool_kw.get("assert_fingerprint"),
+            self.FINGERPRINT,
+        )
+
+    def test_pin_mismatch_aborts_before_credentials_are_sent(self) -> None:
+        """End-to-end proof against a real self-signed TLS server.
+
+        This is the property that matters: with a wrong pin the handshake must
+        fail, so the Basic-auth header carrying the iDRAC password is never
+        written to the impostor. Asserting only on kwargs would not show that.
+        """
+
+        server, fingerprint = _self_signed_https_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        url = f"https://127.0.0.1:{server.server_address[1]}/redfish/v1"
+        auth = ("root", "super-secret-idrac-password")
+
+        with patch.dict(os.environ, {"REDFISH_TLS_FINGERPRINT": "cd" * 32}):
+            wrong = _redfish_client_from_environment()
+        with self.assertRaises(requests.exceptions.RequestException):
+            wrong(url, auth=auth, verify=False, timeout=5)
+        self.assertEqual(
+            server.received_authorization,
+            [],
+            "credentials reached a server that failed the pin",
+        )
+
+        with patch.dict(os.environ, {"REDFISH_TLS_FINGERPRINT": fingerprint}):
+            correct = _redfish_client_from_environment()
+        response = correct(url, auth=auth, verify=False, timeout=5)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(server.received_authorization), 1)
+
+    def test_unset_fingerprint_keeps_the_plain_client(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("REDFISH_TLS_FINGERPRINT", None)
+            self.assertIs(_redfish_client_from_environment(), requests.get)
+
+
+class TelemetryStoreTests(unittest.TestCase):
+    @staticmethod
+    def _stamp(offset_seconds: int) -> str:
+        moment = datetime.now(UTC) - timedelta(seconds=offset_seconds)
+        return moment.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    def _store(self, **kwargs: Any) -> TelemetryStore:
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        kwargs.setdefault("flush_interval", 0.0)
+        kwargs.setdefault("flush_threshold", 1)
+        store = TelemetryStore(str(Path(directory) / "nested" / "telemetry.db"), **kwargs)
+        self.addCleanup(store.close)
+        return store
+
+    def test_records_survive_and_bucket_by_range(self) -> None:
+        store = self._store()
+        self.assertTrue(store.enabled)
+        for index in range(240):
+            store.record(
+                {
+                    "timestamp": self._stamp(15 * (240 - index)),
+                    "max_temp_c": 50.0 + (index % 10),
+                    "avg_fan_rpm": 4000.0 + index,
+                    "power_watts": 170.0,
+                    "source": "redfish",
+                }
+            )
+        store.flush()
+        self.assertEqual(store.stats()["rows"], 240)
+
+        five_minutes = store.samples(300)
+        self.assertTrue(0 < len(five_minutes) <= 25)
+        # A 24 h window must be downsampled, never returned row-for-row.
+        day = store.samples(86400)
+        self.assertLessEqual(len(day), 240)
+        self.assertEqual(
+            set(day[0]),
+            {"timestamp", "max_temp_c", "avg_fan_rpm", "power_watts", "source"},
+        )
+        self.assertEqual(
+            [item["timestamp"] for item in day],
+            sorted(item["timestamp"] for item in day),
+        )
+
+    def test_duplicate_timestamps_replace_instead_of_accumulating(self) -> None:
+        store = self._store()
+        stamp = self._stamp(30)
+        store.record({"timestamp": stamp, "max_temp_c": 40.0, "source": "redfish"})
+        store.record({"timestamp": stamp, "max_temp_c": 41.0, "source": "redfish"})
+        store.flush()
+        self.assertEqual(store.stats()["rows"], 1)
+
+    def test_retention_prunes_rows_older_than_window(self) -> None:
+        store = self._store(retention_days=1)
+        store.record({"timestamp": self._stamp(86400 * 5), "max_temp_c": 30.0})
+        store.record({"timestamp": self._stamp(60), "max_temp_c": 31.0})
+        store.flush()
+        self.assertEqual(store.stats()["rows"], 1)
+
+    def test_unwritable_path_disables_store_without_raising(self) -> None:
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        blocker = directory / "blocker"
+        blocker.write_text("a file where a directory is needed", encoding="utf-8")
+
+        store = TelemetryStore(str(blocker / "nested" / "telemetry.db"))
+        self.addCleanup(store.close)
+        self.assertFalse(store.enabled)
+        self.assertIsNotNone(store.error)
+        store.record({"timestamp": self._stamp(10), "max_temp_c": 20.0})
+        self.assertEqual(store.flush(), 0)
+        self.assertEqual(store.samples(3600), [])
+        self.assertFalse(store.stats()["enabled"])
+
+
+class TelemetryHistoryRangeTests(unittest.TestCase):
+    def _app(self, database_path: str):
+        app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "history-range-key",
+                "AUTH_MODE": "static",
+                "HISTORY_MAX_SAMPLES": 5,
+                "REQUIRE_ORIGIN": False,
+                "TELEMETRY_DB_PATH": database_path,
+                "TELEMETRY_FLUSH_INTERVAL": 0.0,
+                "TELEMETRY_FLUSH_THRESHOLD": 1,
+            },
+            ipmi_runner=FakeIpmi(),
+            redfish_get=FakeRedfish(),
+        )
+        store = app.extensions.get("telemetry_store")
+        if store is not None:
+            self.addCleanup(store.close)
+        return app
+
+    def _feed(self, app, count: int) -> None:
+        backend = app.extensions["r730xd_backend"]
+        backend.state.config = configured_connection()
+        config, revision = backend.state.connection_snapshot()
+        for index in range(count):
+            moment = datetime.now(UTC) - timedelta(seconds=15 * (count - index))
+            payload = {
+                "observed_at": moment.isoformat(timespec="seconds").replace(
+                    "+00:00", "Z"
+                ),
+                "source": "redfish",
+                "temperatures": [{"name": "CPU", "celsius": 50 + index}],
+                "fans": [{"name": "Fan1", "rpm": 4000 + index}],
+                "power": {"consumed_watts": 170 + index},
+            }
+            backend.collect_telemetry = lambda _config, item=payload: item
+            backend._refresh_telemetry(config, revision)
+
+    def test_long_range_is_served_from_sqlite_beyond_the_deque(self) -> None:
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        app = self._app(str(Path(directory) / "telemetry.db"))
+        self._feed(app, 40)
+
+        client = app.test_client()
+        default = client.get("/api/telemetry/history").get_json()["data"]
+        # Without ?range the deque bound still applies, unchanged from before.
+        self.assertEqual(len(default["samples"]), 5)
+        self.assertEqual(default["source"], "memory")
+        self.assertTrue(default["persistence"]["enabled"])
+
+        ranged = client.get("/api/telemetry/history?range=1h").get_json()["data"]
+        self.assertEqual(ranged["source"], "sqlite")
+        self.assertGreater(len(ranged["samples"]), 5)
+        # current/previous must stay on live samples, not bucket averages.
+        self.assertEqual(ranged["current"], default["current"])
+
+    def test_unknown_range_is_rejected(self) -> None:
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        app = self._app(str(Path(directory) / "telemetry.db"))
+        response = app.test_client().get("/api/telemetry/history?range=99y")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"]["code"], "invalid_range")
+
+    def test_history_still_works_without_a_database(self) -> None:
+        app = self._app("")
+        self.assertIsNone(app.extensions.get("telemetry_store"))
+        self._feed(app, 3)
+        data = app.test_client().get("/api/telemetry/history?range=24h").get_json()[
+            "data"
+        ]
+        self.assertEqual(data["source"], "memory")
+        self.assertFalse(data["persistence"]["enabled"])
+        self.assertEqual(len(data["samples"]), 3)
 
 
 if __name__ == "__main__":

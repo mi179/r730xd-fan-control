@@ -18,6 +18,11 @@ services:
       TELEMETRY_CACHE_TTL: "${TELEMETRY_CACHE_TTL:-8}"
       TELEMETRY_SAMPLE_INTERVAL: "${TELEMETRY_SAMPLE_INTERVAL:-15}"
       HISTORY_MAX_SAMPLES: "${HISTORY_MAX_SAMPLES:-90}"
+      # Durable history; empty TELEMETRY_DB_PATH restores memory-only.
+      TELEMETRY_DB_PATH: "${TELEMETRY_DB_PATH:-/data/telemetry.db}"
+      TELEMETRY_RETENTION_DAYS: "${TELEMETRY_RETENTION_DAYS:-30}"
+      TELEMETRY_FLUSH_INTERVAL: "${TELEMETRY_FLUSH_INTERVAL:-60}"
+      TELEMETRY_FLUSH_THRESHOLD: "${TELEMETRY_FLUSH_THRESHOLD:-20}"
       IDRAC_HOST: "${IDRAC_HOST:?IDRAC_HOST must be set}"
       IDRAC_MAC: "${IDRAC_MAC:?IDRAC_MAC must be set}"
       IDRAC_DISCOVERY_CIDR: "${IDRAC_DISCOVERY_CIDR:?IDRAC_DISCOVERY_CIDR must be set}"
@@ -31,12 +36,17 @@ services:
       IDRAC_IPMI_PORT: "${IDRAC_IPMI_PORT:-623}"
       IDRAC_REDFISH_PORT: "${IDRAC_REDFISH_PORT:-443}"
       REDFISH_VERIFY_TLS: "${REDFISH_VERIFY_TLS:-false}"
+      # Pin the iDRAC leaf certificate by SHA-256. Without it, Redfish
+      # Basic auth hands the iDRAC password to whatever answers on 443.
+      REDFISH_TLS_FINGERPRINT: "${REDFISH_TLS_FINGERPRINT:-}"
       IPMITOOL_PATH: "/usr/sbin/ipmitool"
       TZ: "${TZ:-Asia/Shanghai}"
     secrets:
       - idrac_password
     volumes:
       - /proc/1/net/arp:/run/host-proc-net-arp:ro
+      # Writable even under read_only: true.
+      - r730xd-telemetry:/data
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m
@@ -56,6 +66,10 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+volumes:
+  r730xd-telemetry:
+    name: r730xd-telemetry
 
 secrets:
   idrac_password:

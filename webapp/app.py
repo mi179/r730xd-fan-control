@@ -8,6 +8,7 @@ import secrets
 import select
 import shutil
 import socket
+import sqlite3
 import subprocess
 import threading
 import time
@@ -15,7 +16,7 @@ import warnings
 from collections import defaultdict, deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -174,6 +175,29 @@ class IpmiRunner:
             stderr=_redact_and_limit(completed.stderr or "", config.password),
             elapsed_seconds=round(time.monotonic() - started, 3),
         )
+
+
+def _login_rate_key(remote_addr: str | None) -> str:
+    """Bucket login attempts by network, not by single address.
+
+    In `idrac` auth mode a wrong password is compared locally so that guessing
+    never burns the iDRAC's own small remote-failure budget (D-005). The upside
+    is that the real BMC account cannot be locked out by an attacker; the
+    downside is that this endpoint is the *only* thing standing between a LAN
+    attacker and an unlimited offline-style guessing loop. Keying on the exact
+    source address made that trivial to sidestep — every fresh IP got a fresh
+    budget, and handing out extra addresses on a LAN costs nothing.
+    """
+
+    raw = (remote_addr or "").strip()
+    if not raw:
+        return "unknown"
+    try:
+        address = ipaddress.ip_address(raw)
+    except ValueError:
+        return raw[:64]
+    prefix = 24 if isinstance(address, ipaddress.IPv4Address) else 64
+    return str(ipaddress.ip_network(f"{address}/{prefix}", strict=False))
 
 
 class LoginLimiter:
@@ -444,6 +468,225 @@ class MacAddressDiscovery:
             return self._active_match(network)
 
 
+class TelemetryStore:
+    """Durable telemetry history in SQLite.
+
+    The in-memory deque in RuntimeState stays the hot path for the dashboard;
+    this store exists so history survives a container restart and so ranges
+    longer than the deque can hold remain answerable.
+
+    Three properties matter more than throughput here:
+
+    * **Optional.** If the path is missing, unwritable or corrupt, the store
+      disables itself and the app keeps serving from memory. A read-only
+      container without a mounted volume must still boot.
+    * **Batched.** Samples are buffered and flushed on a size/time threshold
+      rather than once per sample, so a 15 s sampling interval does not mean a
+      disk write every 15 s.
+    * **Bounded.** Old rows are pruned on a retention window, and long ranges
+      are downsampled in SQL so a phone never receives 5 760 rows for 24 h.
+    """
+
+    SCHEMA = (
+        "CREATE TABLE IF NOT EXISTS telemetry_sample ("
+        " observed_at TEXT PRIMARY KEY,"
+        " max_temp_c REAL,"
+        " avg_fan_rpm REAL,"
+        " power_watts REAL,"
+        " source TEXT)",
+        "CREATE INDEX IF NOT EXISTS telemetry_sample_time"
+        " ON telemetry_sample (observed_at)",
+    )
+
+    def __init__(
+        self,
+        path: str,
+        *,
+        retention_days: int = 30,
+        flush_interval: float = 60.0,
+        flush_threshold: int = 20,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.path = path
+        self.retention_days = max(1, int(retention_days))
+        self.flush_interval = max(1.0, float(flush_interval))
+        self.flush_threshold = max(1, int(flush_threshold))
+        self._monotonic = monotonic
+        self._lock = threading.Lock()
+        self._pending: list[dict[str, Any]] = []
+        self._last_flush = monotonic()
+        self._last_prune = 0.0
+        self.enabled = False
+        self.error: str | None = None
+        self._connection: sqlite3.Connection | None = None
+        self._open()
+
+    def _open(self) -> None:
+        try:
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(
+                self.path, check_same_thread=False, timeout=5.0
+            )
+            # WAL keeps the writer from blocking dashboard reads; NORMAL trades
+            # a crash-window of the last transaction for far fewer fsyncs.
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=NORMAL")
+            connection.execute("PRAGMA busy_timeout=5000")
+            for statement in self.SCHEMA:
+                connection.execute(statement)
+            connection.commit()
+        except (sqlite3.Error, OSError) as exc:
+            self.error = f"{type(exc).__name__}: {exc}"
+            self._connection = None
+            self.enabled = False
+            return
+        self._connection = connection
+        self.enabled = True
+        self.error = None
+
+    def record(self, sample: Mapping[str, Any]) -> None:
+        if not self.enabled:
+            return
+        with self._lock:
+            self._pending.append(dict(sample))
+            due = (
+                len(self._pending) >= self.flush_threshold
+                or self._monotonic() - self._last_flush >= self.flush_interval
+            )
+        if due:
+            self.flush()
+
+    def flush(self) -> int:
+        if not self.enabled:
+            return 0
+        with self._lock:
+            batch, self._pending = self._pending, []
+            self._last_flush = self._monotonic()
+            connection = self._connection
+            if connection is None or not batch:
+                return 0
+            rows = [
+                (
+                    str(item.get("timestamp") or ""),
+                    item.get("max_temp_c"),
+                    item.get("avg_fan_rpm"),
+                    item.get("power_watts"),
+                    str(item.get("source") or "unknown"),
+                )
+                for item in batch
+                if item.get("timestamp")
+            ]
+            try:
+                connection.executemany(
+                    "INSERT OR REPLACE INTO telemetry_sample"
+                    " (observed_at, max_temp_c, avg_fan_rpm, power_watts, source)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    rows,
+                )
+                connection.commit()
+            except sqlite3.Error as exc:
+                self.error = f"{type(exc).__name__}: {exc}"
+                return 0
+        self._prune()
+        return len(rows)
+
+    def _prune(self) -> None:
+        now = self._monotonic()
+        with self._lock:
+            if self._last_prune and now - self._last_prune < 3600.0:
+                return
+            self._last_prune = now
+            connection = self._connection
+            if connection is None:
+                return
+            cutoff = (
+                datetime.now(UTC) - timedelta(days=self.retention_days)
+            ).isoformat(timespec="seconds").replace("+00:00", "Z")
+            try:
+                connection.execute(
+                    "DELETE FROM telemetry_sample WHERE observed_at < ?", (cutoff,)
+                )
+                connection.commit()
+            except sqlite3.Error as exc:
+                self.error = f"{type(exc).__name__}: {exc}"
+
+    def samples(self, seconds: int, limit: int = 240) -> list[dict[str, Any]]:
+        """Return at most `limit` evenly bucketed samples over the window."""
+
+        if not self.enabled:
+            return []
+        self.flush()
+        start = (
+            datetime.now(UTC) - timedelta(seconds=max(60, int(seconds)))
+        ).isoformat(timespec="seconds").replace("+00:00", "Z")
+        bucket = max(1, int(seconds) // max(1, int(limit)))
+        with self._lock:
+            connection = self._connection
+            if connection is None:
+                return []
+            try:
+                cursor = connection.execute(
+                    # strftime('%s') on the ISO timestamp gives epoch seconds;
+                    # integer division buckets them, and MAX/AVG match how the
+                    # dashboard reads each metric (hottest sensor, mean RPM).
+                    "SELECT"
+                    "  MAX(observed_at) AS observed_at,"
+                    "  MAX(max_temp_c) AS max_temp_c,"
+                    "  AVG(avg_fan_rpm) AS avg_fan_rpm,"
+                    "  AVG(power_watts) AS power_watts,"
+                    "  MAX(source) AS source"
+                    " FROM telemetry_sample"
+                    " WHERE observed_at >= ?"
+                    " GROUP BY CAST(strftime('%s', observed_at) AS INTEGER) / ?"
+                    " ORDER BY observed_at",
+                    (start, bucket),
+                )
+                rows = cursor.fetchall()
+            except sqlite3.Error as exc:
+                self.error = f"{type(exc).__name__}: {exc}"
+                return []
+        return [
+            {
+                "timestamp": row[0],
+                "max_temp_c": _number(row[1]),
+                "avg_fan_rpm": _number(row[2]),
+                "power_watts": _number(row[3]),
+                "source": row[4] or "unknown",
+            }
+            for row in rows
+        ]
+
+    def stats(self) -> dict[str, Any]:
+        if not self.enabled:
+            return {"enabled": False, "error": self.error}
+        with self._lock:
+            connection = self._connection
+            if connection is None:
+                return {"enabled": False, "error": self.error}
+            try:
+                total, oldest, newest = connection.execute(
+                    "SELECT COUNT(*), MIN(observed_at), MAX(observed_at)"
+                    " FROM telemetry_sample"
+                ).fetchone()
+            except sqlite3.Error as exc:
+                return {"enabled": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "enabled": True,
+            "rows": total,
+            "oldest": oldest,
+            "newest": newest,
+            "retention_days": self.retention_days,
+        }
+
+    def close(self) -> None:
+        self.flush()
+        with self._lock:
+            if self._connection is not None:
+                self._connection.close()
+                self._connection = None
+            self.enabled = False
+
+
 class RuntimeState:
     """One-process state store. Gunicorn must run one worker with multiple threads."""
 
@@ -452,7 +695,9 @@ class RuntimeState:
         config: ConnectionConfig,
         cache_ttl: float,
         history_max_samples: int = 90,
+        store: TelemetryStore | None = None,
     ) -> None:
+        self.store = store
         self.lock = threading.RLock()
         self.control_lock = threading.RLock()
         self.config = config
@@ -470,6 +715,7 @@ class RuntimeState:
             maxlen=min(10_000, max(1, int(history_max_samples)))
         )
         self.deep_scan: dict[str, Any] = {"status": "idle"}
+        self.deep_scan_started = 0.0
 
     def connection_snapshot(self) -> tuple[ConnectionConfig, int]:
         with self.lock:
@@ -791,14 +1037,20 @@ class Backend:
             result = self.collect_telemetry(config)
         except Exception as exc:  # Background tasks must always reset the refresh flag.
             error = _safe_exception(exc, config.password)
+        sample: dict[str, Any] | None = None
         with self.state.lock:
             if revision == self.state.config_revision:
                 if result is not None:
                     self.state.telemetry = result
                     self.state.telemetry_time = time.monotonic()
-                    self.state.history.append(_history_sample_from_telemetry(result))
+                    sample = _history_sample_from_telemetry(result)
+                    self.state.history.append(sample)
                 self.state.telemetry_error = error
             self.state.telemetry_refreshing = False
+        # Persist outside the state lock: flushing can touch the disk, and the
+        # dashboard must never block behind it.
+        if sample is not None and self.state.store is not None:
+            self.state.store.record(sample)
 
     def start_deep_scan(self) -> dict[str, Any]:
         config, revision = self.refresh_endpoint(require_verified=True)
@@ -1213,6 +1465,52 @@ def _parse_key_value_output(output: str) -> dict[str, str]:
     return values
 
 
+class _FingerprintAdapter(requests.adapters.HTTPAdapter):
+    """Pin the iDRAC's TLS certificate by SHA-256 fingerprint.
+
+    An iDRAC ships a self-signed certificate, so ordinary CA validation cannot
+    be turned on without building a CA. Without *some* server identity check,
+    Redfish HTTP Basic auth hands the iDRAC root password to whatever answers
+    on port 443 — an on-path attacker between the container and the BMC gets
+    the credential. Pinning the leaf certificate closes that without needing
+    any PKI: urllib3 asserts the fingerprint during the handshake and aborts
+    the connection before the Authorization header is ever sent.
+    """
+
+    def __init__(self, fingerprint: str, **kwargs: Any) -> None:
+        self._fingerprint = fingerprint
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, *args: Any, **kwargs: Any):
+        kwargs["assert_fingerprint"] = self._fingerprint
+        return super().init_poolmanager(*args, **kwargs)
+
+    def proxy_manager_for(self, *args: Any, **kwargs: Any):
+        kwargs["assert_fingerprint"] = self._fingerprint
+        return super().proxy_manager_for(*args, **kwargs)
+
+
+def _normalise_fingerprint(value: str) -> str:
+    """Accept `AA:BB:...` or bare hex; reject anything that is not SHA-256."""
+
+    candidate = re.sub(r"[\s:-]", "", str(value or "")).lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", candidate):
+        raise RuntimeError(
+            "REDFISH_TLS_FINGERPRINT must be a SHA-256 certificate fingerprint "
+            "(64 hex characters, colons optional)"
+        )
+    return candidate
+
+
+def _redfish_client_from_environment() -> Callable[..., Any]:
+    fingerprint = os.getenv("REDFISH_TLS_FINGERPRINT", "").strip()
+    if not fingerprint:
+        return requests.get
+    session = requests.Session()
+    session.mount("https://", _FingerprintAdapter(_normalise_fingerprint(fingerprint)))
+    return session.get
+
+
 def _tls_setting_from_environment() -> bool | str:
     raw = os.getenv("REDFISH_VERIFY_TLS", "false").strip()
     if raw.casefold() in {"false", "0", "no", "off"}:
@@ -1311,6 +1609,14 @@ def create_app(
             os.getenv("TELEMETRY_SAMPLE_INTERVAL", "15")
         ),
         HISTORY_MAX_SAMPLES=int(os.getenv("HISTORY_MAX_SAMPLES", "90")),
+        # Empty disables persistence and keeps the pre-2026-08 memory-only
+        # behaviour, which is what the unit tests and a volume-less run get.
+        TELEMETRY_DB_PATH=os.getenv("TELEMETRY_DB_PATH", ""),
+        TELEMETRY_RETENTION_DAYS=int(os.getenv("TELEMETRY_RETENTION_DAYS", "30")),
+        TELEMETRY_FLUSH_INTERVAL=float(os.getenv("TELEMETRY_FLUSH_INTERVAL", "60")),
+        TELEMETRY_FLUSH_THRESHOLD=int(os.getenv("TELEMETRY_FLUSH_THRESHOLD", "20")),
+        # Floor on how often an anonymous visitor may start an SDR walk.
+        DEEP_SCAN_MIN_INTERVAL=float(os.getenv("DEEP_SCAN_MIN_INTERVAL", "60")),
         TESTING=False,
     )
     if test_config:
@@ -1330,10 +1636,22 @@ def create_app(
         raise RuntimeError("AUTH_MODE must be either 'static' or 'idrac'")
     app.config["AUTH_MODE"] = auth_mode
 
+    store: TelemetryStore | None = None
+    database_path = str(app.config.get("TELEMETRY_DB_PATH") or "").strip()
+    if database_path:
+        store = TelemetryStore(
+            database_path,
+            retention_days=int(app.config["TELEMETRY_RETENTION_DAYS"]),
+            flush_interval=float(app.config["TELEMETRY_FLUSH_INTERVAL"]),
+            flush_threshold=int(app.config["TELEMETRY_FLUSH_THRESHOLD"]),
+        )
+        app.extensions["telemetry_store"] = store
+
     state = RuntimeState(
         _initial_connection(),
         float(app.config["TELEMETRY_CACHE_TTL"]),
         int(app.config["HISTORY_MAX_SAMPLES"]),
+        store=store,
     )
     backend = Backend(
         state,
@@ -1343,7 +1661,7 @@ def create_app(
             or shutil.which("ipmitool")
             or "/usr/bin/ipmitool"
         ),
-        redfish_get or requests.get,
+        redfish_get or _redfish_client_from_environment(),
         os.getenv("REDFISH_CHASSIS_ID", "System.Embedded.1"),
         mac_discovery if mac_discovery is not None else _mac_discovery_from_environment(),
     )
@@ -1478,7 +1796,7 @@ def create_app(
     @app.post("/api/auth/login")
     def login():
         limiter: LoginLimiter = app.extensions["login_limiter"]
-        remote_key = request.remote_addr or "unknown"
+        remote_key = _login_rate_key(request.remote_addr)
         if limiter.blocked(remote_key):
             raise ApiError(429, "login_rate_limited", "登录失败次数过多，请稍后重试")
         payload = _request_json()
@@ -1635,6 +1953,9 @@ def create_app(
             }
             if session.get("authenticated"):
                 telemetry_status["error"] = state.telemetry_error
+                telemetry_status["persistence"] = (
+                    store.stats() if store is not None else {"enabled": False}
+                )
         connection = (
             config.public_dict()
             if session.get("authenticated")
@@ -1750,28 +2071,102 @@ def create_app(
         data, response_status = backend.request_telemetry()
         return _json_ok(_public_telemetry_value(data), response_status)
 
+    HISTORY_RANGES = {
+        "5m": 300,
+        "1h": 3600,
+        "6h": 21600,
+        "24h": 86400,
+        "7d": 604800,
+    }
+
     @app.get("/api/telemetry/history")
     def telemetry_history():
         with state.lock:
-            samples = [dict(sample) for sample in state.history]
+            memory_samples = [dict(sample) for sample in state.history]
+
+        requested = request.args.get("range", "").strip().casefold()
+        samples = memory_samples
+        source = "memory"
+        if requested:
+            if requested not in HISTORY_RANGES:
+                raise ApiError(
+                    400,
+                    "invalid_range",
+                    f"range 必须是 {'、'.join(HISTORY_RANGES)} 之一",
+                )
+            window = HISTORY_RANGES[requested]
+            cutoff = (
+                datetime.now(UTC) - timedelta(seconds=window)
+            ).isoformat(timespec="seconds").replace("+00:00", "Z")
+            recent_memory = [
+                sample
+                for sample in memory_samples
+                if str(sample.get("timestamp") or "") >= cutoff
+            ]
+            stored = (
+                store.samples(window) if store is not None and store.enabled else []
+            )
+            if stored:
+                # Union rather than either/or: right after a restart the deque
+                # holds samples the database has not been given yet, and for
+                # long ranges the database holds far more than the deque can.
+                merged = {
+                    str(sample["timestamp"]): sample
+                    for sample in (*stored, *recent_memory)
+                    if sample.get("timestamp")
+                }
+                samples = [merged[key] for key in sorted(merged)]
+                source = "sqlite+memory" if len(samples) > len(stored) else "sqlite"
+            else:
+                samples = recent_memory
+
+        # current/previous stay on the live deque: they drive the "last three
+        # refreshes" strip, which must not show a downsampled bucket average.
         return _json_ok(
             {
-                "current": samples[-1] if samples else None,
-                "previous": samples[-2] if len(samples) >= 2 else None,
-                "previous2": samples[-3] if len(samples) >= 3 else None,
+                "current": memory_samples[-1] if memory_samples else None,
+                "previous": memory_samples[-2] if len(memory_samples) >= 2 else None,
+                "previous2": memory_samples[-3] if len(memory_samples) >= 3 else None,
                 "samples": samples,
+                "range": requested or None,
+                "source": source,
+                "persistence": {
+                    "enabled": bool(store is not None and store.enabled),
+                    "ranges": sorted(HISTORY_RANGES, key=HISTORY_RANGES.get),
+                },
             }
         )
 
     @app.post("/api/sensors/deep-scan")
-    @login_required
     def start_deep_scan():
+        # Anonymous visitors may trigger a scan, but `sdr elist all` is a heavy
+        # read against a resource-constrained iDRAC8. Without a floor on the
+        # interval, anyone on the LAN could keep the BMC permanently busy, so
+        # requests inside the cooldown return the last result instead of
+        # starting another walk. Authenticated operators bypass the cooldown.
+        cooldown = float(app.config["DEEP_SCAN_MIN_INTERVAL"])
+        if not session.get("authenticated"):
+            now = time.monotonic()
+            with state.lock:
+                running = state.deep_scan.get("status") == "running"
+                started = state.deep_scan_started
+                job = dict(state.deep_scan)
+            since = now - started
+            if running:
+                return _json_ok(job, 202)
+            if started and since < cooldown:
+                job["throttled"] = True
+                job["retry_after_seconds"] = round(cooldown - since, 1)
+                return _json_ok(job, 200)
+        with state.lock:
+            state.deep_scan_started = time.monotonic()
         job = backend.start_deep_scan()
         return _json_ok(job, 202 if job.get("status") == "running" else 200)
 
     @app.get("/api/sensors/deep-scan")
-    @login_required
     def deep_scan_status():
+        # Public: the SDR repository is read-only sensor telemetry, the same
+        # class of data the anonymous dashboard already shows.
         with state.lock:
             job = dict(state.deep_scan)
         return _json_ok(job, 202 if job.get("status") == "running" else 200)

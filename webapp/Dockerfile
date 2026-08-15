@@ -7,7 +7,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN apk add --no-cache ca-certificates ipmitool \
     && addgroup -S -g 10001 r730xd \
-    && adduser -S -D -H -u 10001 -G r730xd -h /app r730xd
+    && adduser -S -D -H -u 10001 -G r730xd -h /app r730xd \
+    # Telemetry volume mountpoint. It must exist in the image and be owned by
+    # the runtime UID, otherwise Docker creates the named volume root-owned and
+    # the non-root process cannot write telemetry.db.
+    && mkdir -p /data \
+    && chown 10001:10001 /data
 
 WORKDIR /app
 
