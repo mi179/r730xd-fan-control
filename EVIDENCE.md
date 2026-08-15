@@ -7,7 +7,7 @@
 | E-001 | 治理骨架引入前，本仓库只有一次提交（`5dfc96e Publish R730xd fan control console`），无增量开发历史 | `git log --oneline`，2026-07-28 实测 | 2026-07-28 |
 | E-002 | `.github/workflows/` 目录为空，项目没有任何 CI | `ls .github/workflows` 无输出，2026-07-28 实测 | 2026-07-28 |
 | E-003 | 版本号漂移：桌面版 `pyproject.toml` 为 0.4.0，Web 安装器 `webapp/installer/VERSION` 为 0.3.1 | 两文件内容，2026-07-28 实测 | 2026-07-28 |
-| E-004 | 当前本地产物哈希：EXE `1BC0903F…F0F3F`（15,222,718 B）；Docker 离线包 `E9758BC5…96BD8D`（23,307,745 B）；镜像包 `F9CD35D5…F0FBAB`（23,376,271 B） | `dist/R730xdFanConsole-AllInOne-v0.4.0.exe`、`dist/docker/` 两文件，SHA-256 于 2026-07-28 计算 | 2026-07-28 |
+| E-004 | 截至 2026-07-28 的本地产物哈希：EXE `1BC0903F…F0F3F`（15,222,718 B）；Docker 离线包 `E9758BC5…96BD8D`（23,307,745 B）；镜像包 `F9CD35D5…F0FBAB`（23,376,271 B）。**Superseded by E-030（Web 线）** | `dist/R730xdFanConsole-AllInOne-v0.4.0.exe`、`dist/docker/` 两文件，SHA-256 于 2026-07-28 计算 | 2026-07-28 |
 | E-005 | 双形态交付 | `README.md`（GUI 与 `webapp/` 两节）、`webapp/README.md` | 回溯 |
 | E-006 | 密码只存内存 | `README.md`“安全设计”第 1 条；`r730xd_fan/ipmi.py` `_validate_settings` 报错文案 | 回溯 |
 | E-007 | `-E` 传密码 | `r730xd_fan/ipmi.py` `build_command()`（`"-E"` 入参、`IPMI_PASSWORD` 环境变量） | 回溯 |
@@ -37,6 +37,8 @@
 | E-028 | 公开面不变量：遍历 `app.url_map` 取出全部未被 `login_required` 包装的路由（当时 10 个），匿名逐个调用后断言 `FakeIpmi` 收到的调用中不存在 `raw 0x30 0x30 0x01/0x02` 前缀的写命令；另断言 `/api/control/manual|auto|speed` 三条必定在鉴权集合内。Web 路由总数 18（PUBLIC 10 / AUTH 8），公开路由中改变机器状态的为 0 | `webapp/tests/test_app.py::PublicSurfaceInvariantTests`（2 个用例）；Web 48 + 桌面 15 测试全通过，`ruff check .` 干净，2026-08-15 实测 | 2026-08-15 |
 
 | E-029 | 风险接受的复议触发条件（写死，供后续会话判断是否需要重新评估 D-021）：① 该服务以任何形式变得可从内网之外访问（端口转发、VPN 之外的隧道、UPnP、反代对外）；② 内网接入不再是单一信任域（访客 Wi-Fi 与本网段互通、出租/合住、IoT 设备与服务器同段）；③ iDRAC 凭据同时用于其他系统。满足任意一条即须重新评估 T-012 / T-013 的优先级 | 用户 2026-08-15 明确决定「内网可以用就可以上线」，安全加固转待办 | 2026-08-15 |
+| E-030 | Web v0.4.0 完整发布链路首次走通：Desktop 15 + Web 51 测试、ruff、治理自检全绿；以提交 `78eeef8` 的 `git archive HEAD:webapp` 为无凭据构建上下文，在 x86_64 WRT 原生构建 image `sha256:fd1db7184f88ba9fb6897ad47b7e180330c6308671c90a2aac1746259979acca`；正式 installer 先按旧容器 image ID 建 `rollback-20260816-001646`，再加载并启动新镜像。既有第三方 fw4 include 仍使 reload 返回非零，E-019/`install.sh` 的严格守卫确认三条项目规则全在 live ruleset 后继续；`verify.sh` 输出 `VERIFY OK`，SQLite 为 UID/GID 10001，`live_smoke.py` 输出 `LIVE_SMOKE_OK`，安装器未发送风扇控制命令 | 镜像归档 `dist/docker/r730xd-fan-web-0.4.0-linux-amd64.tar.gz`，23,497,775 B，SHA-256 `6838FF1AEE873615490C0DA50E1EC0D270432B0EE2F71C6B8520BAFEEF556137`；离线包 `dist/docker/R730xdFan-Web-Docker-v0.4.0.tar.gz`，23,428,725 B，SHA-256 `396369075017D94003D15ABC26B187FA6C9D05030C8F8DC2270D9F0412A6CEFE`；远端 image inspect / `verify.sh` / nft / stat 与本地 live smoke 输出，2026-08-16 实测 | 2026-08-16 |
+| E-031 | iDRAC8 完整 SDR 的真实兼容边界：WRT 镜像内 `ipmitool 1.8.19` 对 firmware 2.70 执行 `sdr elist all` 会段错误，崩溃前能输出真实记录，反复运行会使后续命令出现 `insufficient resources for session`。D-022 修复后只接受 `SIGSEGV` 返回码 `-11/139` 且至少一条有效记录；认证等其他非零退出和空输出仍失败。部署后只触发一次真机扫描，2.691 s 返回 83 条、`status=complete`、`partial=true`、`partial_reason=ipmitool_sigsegv`；常规 Redfish 遥测和风扇控制边界不受影响。浏览器实测新版页面 iDRAC ONLINE、无横向溢出、无 console error，线上 `app.js` 含 partial 横幅与 WARN 文案 | `webapp/app.py` `Backend._run_deep_scan()`；`webapp/tests/test_app.py` 三个 `test_deep_scan_*sigsegv/nonzero*` 用例；线上 `GET /api/sensors/deep-scan` 与 Browser 检查，2026-08-16 实测。当前 MAC `d0:94:66:8c:e0:e3` 在 WRT ARP 表对应 `192.168.5.130`，证明 STATUS 原 `.151` 已过期 | 2026-08-16 |
 
 ## 外部原始资料（不进仓库）
 

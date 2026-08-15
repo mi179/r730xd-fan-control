@@ -167,7 +167,9 @@ Redfish 的 Basic 认证会把 iDRAC 密码交给任何在 443 端口应答的�
 固定叶证书指纹即可关掉这条路径，不需要任何 PKI：
 
 ```bash
-openssl s_client -connect 192.168.5.151:443 </dev/null 2>/dev/null |   openssl x509 -noout -fingerprint -sha256
+IDRAC_IP=192.168.5.130  # 换成当前按 MAC 发现到的地址，DHCP 后可能变化
+openssl s_client -connect "${IDRAC_IP}:443" </dev/null 2>/dev/null | \
+  openssl x509 -noout -fingerprint -sha256
 ```
 
 把输出的十六进制填进 `.env` 的 `REDFISH_TLS_FINGERPRINT`（冒号可留可去），重启容器。
@@ -241,6 +243,17 @@ ports:
 
 > 这道限制不是为了保护数据，而是保护 BMC：`sdr elist all` 对 iDRAC8 是重操作
 > （60 秒超时），没有冷却时局域网内任何人都能把它反复打满。
+
+### iDRAC8 完整 SDR 的已知限制
+
+当前 WRT 镜像内的 `ipmitool 1.8.19` 在这台 iDRAC8（firmware 2.70）上遍历完整 SDR
+时会在途中发生 `SIGSEGV`。应用只在确认是该信号退出、且已经解析出有效记录时保留
+崩溃前的数据，并在 UI 与 API 明确标记 `partial`；认证失败、其他非零退出或空结果仍按
+扫描失败处理。2026-08-16 真机一次扫描取得 83 条部分记录。
+
+这不是“完整扫描已修复”：重复触发崩溃可能暂时耗尽 iDRAC 的 IPMI session，所以看到
+“部分结果”后不要连续刷新。完整且不泄漏 session 的替代读取路径由 T-014 跟踪；日常
+Redfish 遥测和风扇 `raw` 控制不走完整 SDR 遍历，不受这个兼容问题影响。
 
 **所有会改变机器状态的接口边界不变**：联锁、手动模式、调速、连接设置仍需 iDRAC 凭据。
 

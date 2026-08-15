@@ -4,7 +4,7 @@
 
 - Windows 桌面 GUI：连接测试、SENSORS 只读扫描（`sdr elist all`）、固定转速 5%–100%、恢复自动温控、后台线程执行不卡界面。
 - 一体 EXE：首次运行检测 `ipmitool`，缺失时校验内嵌 `BMC.msi` 的 SHA-256 后提权静默安装。
-- Web 版：公开只读遥测（Redfish `Thermal`/`Power`，8 秒缓存，内存保留 90 条样本）；控制区（调速、恢复自动、连接设置、完整扫描）需 iDRAC 用户名+密码解锁；iDRAC DHCP 环境下按网卡 MAC 自动重新发现地址。
+- Web 版：公开只读遥测（Redfish `Thermal`/`Power`，8 秒缓存，内存保留 90 条样本）；控制区（调速、恢复自动、连接设置）需 iDRAC 用户名+密码解锁；完整 SDR 扫描公开但有匿名冷却，已知 `ipmitool` `SIGSEGV` 时只返回明确标记的部分结果；iDRAC DHCP 环境下按网卡 MAC 自动重新发现地址。
 - OpenWrt 部署：独立 Docker 网络 `r730xd-fan-control`、独立默认拒绝防火墙区 `r730xd_fan`、离线安装包一键安装/校验/回滚。
 
 ## Non-goals
