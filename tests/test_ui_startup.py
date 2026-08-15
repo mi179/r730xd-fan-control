@@ -113,7 +113,16 @@ class UiStartupTests(unittest.TestCase):
             app.busy = True
             app._command_done(result, dialog.show_result, dialog.finish_loading, False)
             self.assertIn("ALL 50", dialog.summary_label.cget("text"))
-            self.assertEqual(len(dialog.sensor_list.winfo_children()), 50)
+            import customtkinter as ctk
+
+            children = dialog.sensor_list.winfo_children()
+            # One row per reading, nothing truncated, plus one category header
+            # for the single TEMPERATURE group these fixtures produce.
+            rows = [child for child in children if isinstance(child, ctk.CTkFrame)]
+            headers = [child for child in children if isinstance(child, ctk.CTkLabel)]
+            self.assertEqual(len(rows), 50)
+            self.assertEqual(len(headers), 1)
+            self.assertIn("TEMPERATURE", headers[0].cget("text"))
             event_log = app.log.get("1.0", "end")
             self.assertIn("结果已显示在传感器窗口", event_log)
             self.assertNotIn("Sensor 49", event_log)

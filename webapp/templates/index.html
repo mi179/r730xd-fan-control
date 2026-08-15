@@ -4,351 +4,275 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#071018">
-  <title>R730XD · 实时热控</title>
+  <meta name="theme-color" content="#0a0a0a">
+  <title>R730XD 热控</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
-<body class="app-page">
-  <div class="ambient-grid" aria-hidden="true"></div>
-
+<body>
   <header class="topbar">
-    <a class="brand-lockup" href="/" aria-label="R730XD 热控首页">
-      <span class="brand-mark" aria-hidden="true">R7</span>
-      <span class="brand-copy">
-        <strong>R730XD <i>/</i> THERMAL</strong>
-        <small>LOCAL HARDWARE CONTROL</small>
-      </span>
-    </a>
+    <a class="brand" href="/">R730XD<span>热控</span></a>
     <div class="topbar-actions">
-      <div id="connectionPill" class="status-pill is-neutral" role="status">
+      <div id="connectionPill" class="status is-neutral" role="status">
         <span class="status-dot" aria-hidden="true"></span>
         <span id="connectionPillText">正在连接</span>
       </div>
-      <a id="loginLink" class="button compact unlock-button" href="/login">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
-        解锁控制
-      </a>
-      <button id="logoutButton" class="icon-button" type="button" title="退出控制模式" aria-label="退出控制模式" hidden>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"/></svg>
-      </button>
+      <a id="loginLink" class="button" href="/login">解锁控制</a>
+      <button id="logoutButton" class="button ghost" type="button" hidden>退出</button>
     </div>
   </header>
 
-  <main class="dashboard shell">
-    <section class="telemetry-section" aria-labelledby="telemetryHeading">
-      <div class="section-heading telemetry-heading">
-        <div>
-          <p class="eyebrow"><span class="live-dot" aria-hidden="true"></span> LIVE TELEMETRY</p>
-          <h1 id="telemetryHeading">服务器遥测</h1>
-          <p class="section-note">无需登录即可查看 · 数据来自 iDRAC</p>
-        </div>
-        <div class="refresh-tools">
-          <span id="cacheStatus" class="cache-status" role="status">等待数据</span>
-          <button id="refreshSummaryButton" class="button compact secondary" type="button">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5M6.1 9A7 7 0 0 1 18 6l2 5M4 13l2 5a7 7 0 0 0 11.9-3"/></svg>
-            刷新
-          </button>
-          <button id="openSensorsButton" class="button compact secondary" type="button" hidden>完整扫描</button>
+  <main class="shell">
+    <!-- Alerts take no space at all when nothing is wrong. -->
+    <section id="alertBanner" class="alert-banner" role="alert" hidden>
+      <div class="alert-headline">
+        <strong id="alertCount">0</strong>
+        <span>个传感器处于异常状态</span>
+      </div>
+      <ul id="alertList" class="alert-items"></ul>
+    </section>
+
+    <!-- ── Readings ─────────────────────────────────────────────── -->
+    <section class="readings" aria-labelledby="readingsHeading">
+      <div class="block-head">
+        <h1 id="readingsHeading">服务器遥测</h1>
+        <div class="block-tools">
+          <span id="cacheStatus" class="meta" role="status">等待数据</span>
+          <button id="refreshSummaryButton" class="button ghost" type="button">刷新</button>
+          <button id="openSensorsButton" class="button ghost" type="button">完整扫描</button>
         </div>
       </div>
 
-      <div class="telemetry-grid">
-        <article class="metric-card metric-temperature">
-          <div class="metric-topline">
-            <span class="metric-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M14 14.8V5a4 4 0 0 0-8 0v9.8a6 6 0 1 0 8 0ZM10 5v11"/></svg>
-            </span>
-            <span id="temperatureHealth" class="health-tag is-unknown">UNKNOWN</span>
-          </div>
-          <p class="metric-label">最高温度</p>
-          <div class="metric-reading"><strong id="temperatureValue">--</strong><span id="temperatureUnit">°C</span></div>
-          <div class="metric-footer">
+      <div class="reading-grid">
+        <article class="reading" data-metric="temperature">
+          <p class="reading-label">最高温度</p>
+          <div class="reading-value"><strong id="temperatureValue">--</strong><span id="temperatureUnit">°C</span></div>
+          <div class="reading-foot">
             <small id="temperatureDetail">等待温度传感器</small>
-            <span id="temperatureDelta" class="metric-delta is-flat">—</span>
+            <span id="temperatureDelta" class="delta is-flat">—</span>
           </div>
+          <span id="temperatureHealth" class="health is-unknown">UNKNOWN</span>
         </article>
 
-        <article class="metric-card metric-fan">
-          <div class="metric-topline">
-            <span class="metric-icon fan-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M12 12c-3.6-1-5.2-3.1-4.1-5.2C9 4.7 11.1 5.7 12 12Zm0 0c1-3.6 3.1-5.2 5.2-4.1 2.1 1.1 1.1 3.2-5.2 4.1Zm0 0c3.6 1 5.2 3.1 4.1 5.2-1.1 2.1-3.2 1.1-4.1-5.2Zm0 0c-1 3.6-3.1 5.2-5.2 4.1-2.1-1.1-1.1-3.2 5.2-4.1Z"/><circle cx="12" cy="12" r="1.4"/></svg>
-            </span>
-            <span id="fanHealth" class="health-tag is-unknown">UNKNOWN</span>
-          </div>
-          <p class="metric-label">平均风扇转速</p>
-          <div class="metric-reading"><strong id="fanValue">--</strong><span id="fanUnit">RPM</span></div>
-          <div class="metric-footer">
+        <article class="reading" data-metric="fan">
+          <p class="reading-label">平均风扇转速</p>
+          <div class="reading-value"><strong id="fanValue">--</strong><span id="fanUnit">RPM</span></div>
+          <div class="reading-foot">
             <small id="fanDetail">等待风扇传感器</small>
-            <span id="fanDelta" class="metric-delta is-flat">—</span>
+            <span id="fanDelta" class="delta is-flat">—</span>
           </div>
+          <span id="fanHealth" class="health is-unknown">UNKNOWN</span>
         </article>
 
-        <article class="metric-card metric-power">
-          <div class="metric-topline">
-            <span class="metric-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="m13 2-8 12h7l-1 8 8-12h-7l1-8Z"/></svg>
-            </span>
-            <span id="powerHealth" class="health-tag is-unknown">UNKNOWN</span>
-          </div>
-          <p class="metric-label">实时输入功耗</p>
-          <div class="metric-reading"><strong id="powerValue">--</strong><span id="powerUnit">W</span></div>
-          <div class="metric-footer">
+        <article class="reading" data-metric="power">
+          <p class="reading-label">实时输入功耗</p>
+          <div class="reading-value"><strong id="powerValue">--</strong><span id="powerUnit">W</span></div>
+          <div class="reading-foot">
             <small id="powerDetail">等待功耗传感器</small>
-            <span id="powerDelta" class="metric-delta is-flat">—</span>
+            <span id="powerDelta" class="delta is-flat">—</span>
           </div>
+          <span id="powerHealth" class="health is-unknown">UNKNOWN</span>
         </article>
       </div>
     </section>
 
-    <section class="history-panel panel" aria-labelledby="historyHeading">
-      <div class="section-heading history-heading">
-        <div>
-          <p class="eyebrow">RECENT SIGNAL / 5 MIN</p>
-          <h2 id="historyHeading">最近几分钟趋势</h2>
-        </div>
-        <div class="trend-legend" aria-label="趋势图图例">
-          <span class="legend-temperature">温度</span>
-          <span class="legend-fan">转速</span>
-          <span class="legend-power">功耗</span>
+    <!-- ── Trend ────────────────────────────────────────────────── -->
+    <section class="trend" aria-labelledby="trendHeading">
+      <div class="block-head">
+        <h2 id="trendHeading">趋势</h2>
+        <div class="block-tools">
+          <div class="segmented" id="rangeSwitch" role="group" aria-label="趋势时间范围">
+            <button class="is-selected" type="button" data-range="5m">5 分钟</button>
+            <button type="button" data-range="1h">1 小时</button>
+            <button type="button" data-range="6h">6 小时</button>
+            <button type="button" data-range="24h">24 小时</button>
+          </div>
         </div>
       </div>
-      <div class="trend-canvas-wrap">
-        <canvas id="trendCanvas" aria-label="温度、风扇转速与功耗最近几分钟趋势"></canvas>
-        <p id="trendEmpty" class="trend-empty">正在积累趋势数据…</p>
+
+      <div class="legend" id="trendLegend" role="group" aria-label="趋势图系列开关">
+        <button class="series-temperature is-on" type="button" data-series="max_temp_c" aria-pressed="true"><i aria-hidden="true"></i>温度<b id="legendTemperatureValue">--</b></button>
+        <button class="series-fan is-on" type="button" data-series="avg_fan_rpm" aria-pressed="true"><i aria-hidden="true"></i>转速<b id="legendFanValue">--</b></button>
+        <button class="series-power is-on" type="button" data-series="power_watts" aria-pressed="true"><i aria-hidden="true"></i>功耗<b id="legendPowerValue">--</b></button>
       </div>
+
+      <div class="canvas-wrap">
+        <canvas id="trendCanvas" aria-label="温度、风扇转速与功耗趋势"></canvas>
+        <p id="trendEmpty" class="canvas-empty">正在积累趋势数据…</p>
+        <div id="trendTooltip" class="tooltip" hidden aria-hidden="true"></div>
+      </div>
+      <p id="trendMeta" class="meta">—</p>
       <p id="trendDescription" class="sr-only">尚无趋势数据</p>
+    </section>
 
-      <div class="snapshot-strip" aria-label="最近三次刷新">
-        <article class="snapshot is-current">
-          <div><span>当前</span><time id="currentSampleTime">--:--:--</time></div>
-          <dl>
-            <div><dt>温度</dt><dd id="currentTemperature">--</dd></div>
-            <div><dt>转速</dt><dd id="currentFan">--</dd></div>
-            <div><dt>功耗</dt><dd id="currentPower">--</dd></div>
-          </dl>
-        </article>
-        <article class="snapshot">
-          <div><span>上次</span><time id="previousSampleTime">--:--:--</time></div>
-          <dl>
-            <div><dt>温度</dt><dd id="previousTemperature">--</dd></div>
-            <div><dt>转速</dt><dd id="previousFan">--</dd></div>
-            <div><dt>功耗</dt><dd id="previousPower">--</dd></div>
-          </dl>
-        </article>
-        <article class="snapshot">
-          <div><span>上上次</span><time id="previous2SampleTime">--:--:--</time></div>
-          <dl>
-            <div><dt>温度</dt><dd id="previous2Temperature">--</dd></div>
-            <div><dt>转速</dt><dd id="previous2Fan">--</dd></div>
-            <div><dt>功耗</dt><dd id="previous2Power">--</dd></div>
-          </dl>
-        </article>
+    <!-- ── Per-sensor detail ────────────────────────────────────── -->
+    <section class="detail" aria-labelledby="detailHeading">
+      <div class="block-head">
+        <h2 id="detailHeading">传感器明细</h2>
+        <span id="detailSource" class="meta">—</span>
+      </div>
+
+      <div class="tabs" role="tablist" id="detailTabs">
+        <button class="is-selected" type="button" role="tab" aria-selected="true" aria-controls="detailTemperature" data-tab="temperature">温度<b id="tabCountTemperature">0</b></button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="detailFan" data-tab="fan">风扇<b id="tabCountFan">0</b></button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="detailPower" data-tab="power">功耗</button>
+      </div>
+
+      <div id="detailTemperature" role="tabpanel" tabindex="0">
+        <ul class="rows" id="temperatureList"><li class="row-empty">等待温度传感器</li></ul>
+      </div>
+      <div id="detailFan" role="tabpanel" tabindex="0" hidden>
+        <ul class="rows" id="fanList"><li class="row-empty">等待风扇传感器</li></ul>
+      </div>
+      <div id="detailPower" role="tabpanel" tabindex="0" hidden>
+        <dl class="power-grid">
+          <div><dt>实时</dt><dd id="powerConsumed">--</dd></div>
+          <div><dt>平均</dt><dd id="powerAverage">--</dd></div>
+          <div><dt>最小</dt><dd id="powerMinimum">--</dd></div>
+          <div><dt>最大</dt><dd id="powerMaximum">--</dd></div>
+          <div><dt>已分配</dt><dd id="powerAllocated">--</dd></div>
+          <div><dt>容量</dt><dd id="powerCapacity">--</dd></div>
+        </dl>
       </div>
     </section>
 
-    <section id="controlGate" class="control-gate panel" aria-labelledby="controlGateHeading">
-      <div class="lock-orbit" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg>
+    <section class="sensors" id="sensorsPanel" aria-labelledby="sensorsHeading">
+      <div class="block-head">
+        <h2 id="sensorsHeading">完整传感器扫描</h2>
+            <p class="block-note">iDRAC 的全部 SDR 记录，无需登录即可查看。每条记录旁给出中文注解。</p>
+        <div class="block-tools">
+          <span id="sensorDialogMeta" class="meta">尚未读取</span>
+          <button id="exportSensorsButton" class="button ghost" type="button" disabled>导出 CSV</button>
+          <button id="refreshAllSensorsButton" class="button ghost" type="button">刷新</button>
+        </div>
       </div>
-      <div class="control-gate-copy">
-        <p class="eyebrow">CONTROL DECK / LOCKED</p>
-        <h2 id="controlGateHeading">只读监控已开放，调速需要授权</h2>
-        <p>使用同一套 iDRAC 带外管理账号解锁。没有额外的 Web 密码。</p>
+
+      <div class="filters">
+        <input id="sensorSearchInput" type="search" placeholder="搜索名称、类型、读数或状态">
+        <select id="sensorTypeFilter" aria-label="传感器类型筛选">
+          <option value="all">全部类型</option>
+          <option value="temperature">温度</option>
+          <option value="fan">风扇</option>
+          <option value="power">功耗</option>
+          <option value="voltage">电压</option>
+          <option value="current">电流</option>
+          <option value="system">系统</option>
+          <option value="other">其他</option>
+        </select>
+        <label class="check">
+          <input id="sensorAlertsOnly" type="checkbox">
+          <span>只看异常</span>
+        </label>
       </div>
-      <a class="button primary control-unlock-cta" href="/login">
-        使用 iDRAC 密码解锁控制
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
-      </a>
+
+      <div class="chips" id="sensorChipRow" hidden></div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th><button class="th-sort" type="button" data-sort="name">名称</button></th>
+              <th><button class="th-sort" type="button" data-sort="typeLabel">类型</button></th>
+              <th><button class="th-sort" type="button" data-sort="reading">读数</button></th>
+              <th><button class="th-sort" type="button" data-sort="status">状态</button></th>
+            </tr>
+          </thead>
+          <tbody id="sensorTableBody">
+            <tr><td colspan="4" class="empty">点击“刷新”读取全部传感器</td></tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
-    <div id="authenticatedWorkspace" class="authenticated-workspace" hidden>
-      <section class="operator-strip panel" aria-label="已解锁的管理工具">
-        <div class="operator-identity">
-          <span class="operator-led" aria-hidden="true"></span>
-          <div><small>CONTROL AUTHORITY</small><strong id="operatorName">iDRAC 操作员</strong></div>
+    <!-- ── Control ──────────────────────────────────────────────── -->
+    <section id="controlGate" class="gate">
+      <p>只读监控无需密码。调速需要用同一套 iDRAC 账号解锁。</p>
+      <a class="button primary" href="/login">解锁控制</a>
+    </section>
+
+    <div id="authenticatedWorkspace" hidden>
+      <section class="control" aria-labelledby="controlHeading">
+        <div class="block-head">
+          <h2 id="controlHeading">风扇控制</h2>
+          <div class="block-tools">
+            <span id="modeBadge" class="health is-unknown">UNKNOWN</span>
+            <button id="openConnectionButton" class="button ghost" type="button">连接设置</button>
+            <button id="operatorSensorsButton" class="button ghost" type="button">完整扫描</button>
+          </div>
         </div>
-        <div class="operator-actions">
-          <button id="openConnectionButton" class="button compact secondary" type="button">连接设置</button>
-          <button id="operatorSensorsButton" class="button compact secondary" type="button">完整扫描</button>
+
+        <!-- Always reachable, never behind the interlock. -->
+        <button id="autoModeButton" class="button wide" type="button">恢复 iDRAC 自动温控</button>
+
+        <div class="manual">
+          <label class="interlock">
+            <input id="interlockToggle" type="checkbox">
+            <span>解除安全联锁，允许手动调速</span>
+          </label>
+
+          <div id="interlockWarning" class="danger-note" hidden>
+            固定低转速会削弱硬件自动保护。解除后请持续观察 CPU、内存和硬盘温度。
+          </div>
+
+          <button id="manualModeButton" class="button danger wide" type="button" disabled>启用手动控制</button>
+
+          <div class="output">
+            <div class="output-head">
+              <span id="fanControlState" class="meta">LOCKED</span>
+              <div class="output-value"><strong id="sliderValue">10</strong><span>%</span></div>
+            </div>
+            <input id="fanSlider" type="range" min="5" max="100" step="1" value="10" disabled>
+            <div class="output-scale"><span>5%</span><span id="dialHint">联锁后启用</span><span>100%</span></div>
+            <div class="presets" id="presetGrid">
+              <button type="button" data-speed="10" disabled>10%</button>
+              <button type="button" data-speed="15" disabled>15%</button>
+              <button type="button" data-speed="20" disabled>20%</button>
+              <button type="button" data-speed="30" disabled>30%</button>
+            </div>
+            <button id="applyFanButton" class="button wide" type="button" disabled>应用 <b id="gaugeValue">10</b>% 输出</button>
+          </div>
         </div>
       </section>
 
-      <section class="workspace-grid">
-        <aside class="panel control-panel" aria-labelledby="controlHeading">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">CONTROL MODE</p>
-              <h2 id="controlHeading">温控模式</h2>
-            </div>
-            <span id="modeBadge" class="mode-badge is-unknown">UNKNOWN</span>
-          </div>
-
-          <div class="connection-rail">
-            <span>iDRAC CHANNEL</span>
-            <strong id="connectionState">SETUP REQUIRED</strong>
-          </div>
-
-          <div class="interlock-row">
-            <div>
-              <strong>安全联锁</strong>
-              <p>先确认风险，才允许手动调速</p>
-            </div>
-            <label class="switch">
-              <input id="interlockToggle" type="checkbox" aria-label="解除安全联锁">
-              <span aria-hidden="true"></span>
-            </label>
-          </div>
-
-          <div id="interlockWarning" class="warning-box" hidden>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 21h20L12 3Zm0 6v5m0 3h.01"/></svg>
-            <p>固定低转速可能削弱硬件保护。请持续观察 CPU、内存和硬盘温度。</p>
-          </div>
-
-          <div class="mode-actions">
-            <button id="manualModeButton" class="button danger" type="button" disabled>启用手动控制</button>
-            <button id="autoModeButton" class="button secondary" type="button">恢复 iDRAC 自动温控</button>
-          </div>
-        </aside>
-
-        <section class="panel fan-panel" aria-labelledby="fanHeading">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">FAN OUTPUT</p>
-              <h2 id="fanHeading">风扇遥控器</h2>
-            </div>
-            <span id="fanControlState" class="output-state">LOCKED</span>
-          </div>
-
-          <div class="fan-layout">
-            <div class="fan-dial" aria-label="当前设置的风扇输出百分比">
-              <svg class="gauge-svg" viewBox="0 0 260 220" aria-hidden="true">
-                <circle class="gauge-track" cx="130" cy="110" r="88" pathLength="100"/>
-                <circle id="gaugeProgress" class="gauge-progress" cx="130" cy="110" r="88" pathLength="100" stroke-dasharray="5 100"/>
-                <circle class="gauge-inner" cx="130" cy="110" r="69"/>
-                <path class="gauge-tick" d="M130 11v9M208 40l-7 7M229 110h-9M52 40l7 7M31 110h9"/>
-              </svg>
-              <div class="gauge-label">
-                <span>OUTPUT</span>
-                <strong><b id="gaugeValue">10</b><i>%</i></strong>
-                <small id="dialHint">联锁后启用</small>
-              </div>
-            </div>
-
-            <div class="fan-controls">
-              <p class="subheading">快速预设</p>
-              <div class="preset-grid" id="presetGrid">
-                <button class="preset-button" type="button" data-speed="10" disabled><strong>10%</strong><span>静音</span></button>
-                <button class="preset-button" type="button" data-speed="15" disabled><strong>15%</strong><span>日常</span></button>
-                <button class="preset-button" type="button" data-speed="20" disabled><strong>20%</strong><span>夏季</span></button>
-                <button class="preset-button" type="button" data-speed="30" disabled><strong>30%</strong><span>负载</span></button>
-              </div>
-
-              <label class="slider-block" for="fanSlider">
-                <span><b>CUSTOM OUTPUT</b><strong id="sliderValue">10%</strong></span>
-                <input id="fanSlider" type="range" min="5" max="100" step="1" value="10" disabled>
-                <small><span>5%</span><span>100%</span></small>
-              </label>
-              <button id="applyFanButton" class="button primary apply-output" type="button" disabled>应用自定义输出</button>
-            </div>
-          </div>
-        </section>
-      </section>
-
-      <section class="panel event-panel" aria-labelledby="eventHeading">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">OPERATOR EVENT LOG</p>
-            <h2 id="eventHeading" class="sr-only">操作事件日志</h2>
-          </div>
-          <button id="clearLogButton" class="button compact secondary" type="button">清空</button>
+      <section class="events">
+        <div class="block-head">
+          <h2>操作记录</h2>
+          <button id="clearLogButton" class="button ghost" type="button">清空</button>
         </div>
-        <div id="eventLog" class="event-log" role="log" aria-live="polite">
-          <div><time>--:--:--</time><span class="log-info">[INFO]</span><span>控制台已就绪</span></div>
+        <div id="eventLog" class="log" role="log" aria-live="polite">
+          <div><time>--:--:--</time><span class="log-info">INFO</span><span>控制台已就绪</span></div>
         </div>
       </section>
     </div>
   </main>
 
-  <dialog id="connectionDialog" class="modal connection-modal">
+  <dialog id="connectionDialog" class="modal">
     <form id="connectionForm" method="dialog" autocomplete="off">
-      <div class="modal-header">
-        <div>
-          <p class="eyebrow">IDRAC / CONNECTION</p>
-          <h2>带外管理连接</h2>
-        </div>
-        <button class="icon-button modal-close" type="button" data-close-dialog aria-label="关闭">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
-        </button>
+      <div class="modal-head">
+        <h2>iDRAC 连接</h2>
+        <button class="button ghost" type="button" data-close-dialog aria-label="关闭">关闭</button>
       </div>
-      <p class="modal-note">登录凭据由 WRT 只读 secret 提供；此处临时修改只保存在当前服务进程内存中。</p>
-      <div class="form-grid">
-        <label>
-          <span>IDRAC HOST</span>
-          <input id="hostInput" name="host" type="text" inputmode="decimal" placeholder="192.168.5.151" required>
-        </label>
-        <label>
-          <span>USERNAME</span>
-          <input id="usernameInput" name="username" type="text" value="root" autocomplete="username" required>
-        </label>
-        <label class="full-field">
-          <span>PASSWORD</span>
-          <div class="password-field">
-            <input id="passwordInput" name="password" type="password" autocomplete="new-password" placeholder="留空则保持当前密码">
-            <button id="toggleConnectionPassword" type="button" aria-label="显示密码">显示</button>
-          </div>
-        </label>
-        <label class="full-field inline-check">
-          <input id="verifyTlsInput" name="verify_tls" type="checkbox">
-          <span>验证 Redfish TLS 证书（自签名证书通常关闭）</span>
-        </label>
-      </div>
+      <p class="meta">登录凭据由 WRT 只读 secret 提供；此处的临时修改只保存在当前服务进程内存中。</p>
+      <label><span>HOST</span><input id="hostInput" name="host" type="text" inputmode="decimal" placeholder="192.168.5.151" required></label>
+      <label><span>USERNAME</span><input id="usernameInput" name="username" type="text" value="root" autocomplete="username" required></label>
+      <label>
+        <span>PASSWORD</span>
+        <span class="password-field">
+          <input id="passwordInput" name="password" type="password" autocomplete="new-password" placeholder="留空则保持当前密码">
+          <button id="toggleConnectionPassword" type="button" aria-label="显示密码">显示</button>
+        </span>
+      </label>
+      <label class="check">
+        <input id="verifyTlsInput" name="verify_tls" type="checkbox">
+        <span>验证 Redfish TLS 证书（自签名证书通常关闭）</span>
+      </label>
       <div class="modal-actions">
-        <button class="button secondary" type="button" data-close-dialog>取消</button>
+        <button class="button ghost" type="button" data-close-dialog>取消</button>
         <button id="saveConnectionButton" class="button primary" type="submit">保存并测试</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="sensorsDialog" class="modal sensors-modal">
-    <div class="modal-header sensor-modal-header">
-      <div>
-        <p class="eyebrow">IDRAC / SDR REPOSITORY</p>
-        <h2>完整传感器扫描</h2>
-        <p id="sensorDialogMeta" class="modal-note">尚未读取</p>
-      </div>
-      <div class="modal-header-actions">
-        <button id="refreshAllSensorsButton" class="button compact secondary" type="button">刷新</button>
-        <button class="icon-button modal-close" type="button" data-close-dialog aria-label="关闭">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
-        </button>
-      </div>
-    </div>
-    <div class="sensor-filter-row">
-      <label class="sensor-search">
-        <span class="sr-only">搜索传感器</span>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
-        <input id="sensorSearchInput" type="search" placeholder="搜索名称、类型、读数或状态">
-      </label>
-      <select id="sensorTypeFilter" aria-label="传感器类型筛选">
-        <option value="all">全部类型</option>
-        <option value="temperature">温度</option>
-        <option value="fan">风扇</option>
-        <option value="power">功耗</option>
-        <option value="voltage">电压</option>
-        <option value="other">其他</option>
-      </select>
-    </div>
-    <div class="sensor-table-wrap">
-      <table class="sensor-table">
-        <thead><tr><th>名称</th><th>类型</th><th>读数</th><th>状态</th></tr></thead>
-        <tbody id="sensorTableBody">
-          <tr><td colspan="4" class="empty-table">点击“刷新”读取全部传感器</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </dialog>
-
-  <div id="toastRegion" class="toast-region" aria-live="assertive" aria-atomic="true"></div>
+  <div id="toastRegion" class="toasts" aria-live="assertive" aria-atomic="true"></div>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

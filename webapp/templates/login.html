@@ -4,64 +4,42 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#071018">
-  <title>iDRAC 带外管理登录 · R730XD</title>
+  <meta name="theme-color" content="#0a0a0a">
+  <title>iDRAC 登录 · R730XD</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body class="login-page">
-  <div class="ambient-grid" aria-hidden="true"></div>
   <main class="login-shell">
-    <section class="login-aside">
-      <a class="brand-lockup" href="/" aria-label="返回只读监控">
-        <span class="brand-mark" aria-hidden="true">R7</span>
-        <span class="brand-copy">
-          <strong>R730XD <i>/</i> THERMAL</strong>
-          <small>LOCAL HARDWARE CONTROL</small>
-        </span>
-      </a>
-      <div class="login-remote" aria-hidden="true">
-        <span class="remote-led"></span>
-        <div class="remote-screen"><small>CONTROL DECK</small><strong>LOCKED</strong><i></i></div>
-        <div class="remote-dial"><span></span></div>
-        <div class="remote-keys"><i></i><i></i><i></i></div>
-      </div>
-      <div class="login-aside-copy">
-        <p class="eyebrow">DIRECT IDRAC AUTHORITY</p>
-        <h1>同一个带外密码，直接解锁调速。</h1>
-        <p>温度、功耗和风扇转速一直公开可见；只有改变服务器状态的操作需要登录。</p>
-      </div>
-    </section>
-
     <section class="login-card" aria-labelledby="loginHeading">
       <a class="back-monitor-link" href="/">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
         返回只读监控
       </a>
-      <div class="login-lock-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
-      </div>
-      <p class="eyebrow">SECURE CONTROL ACCESS</p>
+
       <h2 id="loginHeading">iDRAC 带外管理登录</h2>
-      <p class="login-intro">请输入服务器现有的 iDRAC 账号和密码。这里没有另一套 Web 密码。</p>
+      <p class="login-intro">
+        请输入服务器现有的 iDRAC 账号和密码。这里没有另一套 Web 密码。
+        温度、功耗和风扇转速一直公开可见；只有改变服务器状态的操作需要登录。
+      </p>
+
       <form id="loginForm" autocomplete="on">
         <label>
-          <span>IDRAC USERNAME</span>
+          <span>USERNAME</span>
           <input id="loginUsername" name="username" type="text" value="root" autocomplete="username" required autofocus>
         </label>
         <label>
-          <span>IDRAC PASSWORD</span>
-          <div class="password-field">
+          <span>PASSWORD</span>
+          <span class="password-field">
             <input id="loginPassword" name="password" type="password" autocomplete="current-password" required>
             <button id="toggleLoginPassword" type="button" aria-label="显示密码">显示</button>
-          </div>
+          </span>
           <small class="credential-hint">提交值不会写入浏览器或 Cookie；WRT 仅与只读 Docker secret 做本地比对。</small>
         </label>
         <p id="loginError" class="form-error" role="alert" hidden></p>
-        <button id="loginButton" class="button primary login-button" type="submit">
-          验证并解锁控制
-        </button>
+        <button id="loginButton" class="button primary login-button" type="submit">验证并解锁控制</button>
       </form>
-      <p class="login-footnote"><span></span>当前为局域网 HTTP，请只在可信 LAN 内登录；公开监控无需密码</p>
+
+      <p class="login-footnote"><span></span>当前为局域网 HTTP，请只在可信 LAN 内登录</p>
     </section>
   </main>
   <script src="/static/login.js" defer></script>

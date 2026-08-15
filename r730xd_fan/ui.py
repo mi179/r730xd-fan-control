@@ -22,19 +22,22 @@ from .ipmi import (
 )
 
 COLORS = {
-    "background": "#07111F",
-    "surface": "#0D1B2A",
-    "surface_2": "#11243A",
-    "line": "#20364D",
-    "text": "#F2F7FC",
-    "muted": "#8FA6BC",
-    "blue": "#3B82F6",
-    "blue_hover": "#2563EB",
-    "cyan": "#38BDF8",
-    "green": "#22C55E",
-    "amber": "#F59E0B",
-    "red": "#EF4444",
-    "red_hover": "#DC2626",
+    # Monochrome on near-black; colour carries meaning. Amber and red mean
+    # warning and critical and are used for nothing else. Mirrors the rule in
+    # webapp/static/app.css so both front ends read as one product.
+    "background": "#0A0A0A",
+    "surface": "#131312",
+    "surface_2": "#1A1A19",
+    "line": "#2A2A28",
+    "text": "#D8D5CF",
+    "muted": "#94918B",
+    "control": "#2E2E2C",
+    "control_hover": "#3B3B38",
+    "reading": "#B9B5AD",
+    "ok": "#94918B",
+    "amber": "#D8973A",
+    "red": "#D8474C",
+    "red_hover": "#BE3D42",
 }
 
 
@@ -94,7 +97,7 @@ class FanGauge(ctk.CTkFrame):
             outline=COLORS["line"],
         )
         extent = 140 * self.value / 100
-        color = COLORS["cyan"] if self.value <= 30 else COLORS["amber"]
+        color = COLORS["reading"] if self.value <= 30 else COLORS["amber"]
         if self.value >= 60:
             color = COLORS["red"]
         canvas.create_arc(
@@ -197,8 +200,8 @@ class ConnectionDialog(ctk.CTkToplevel):
             checkbox_width=17,
             checkbox_height=17,
             border_width=1,
-            fg_color=COLORS["blue"],
-            hover_color=COLORS["blue_hover"],
+            fg_color=COLORS["control"],
+            hover_color=COLORS["control_hover"],
             text_color=COLORS["muted"],
             font=("Microsoft YaHei UI", 10),
         )
@@ -224,8 +227,8 @@ class ConnectionDialog(ctk.CTkToplevel):
             text="APPLY SETTINGS",
             height=42,
             corner_radius=8,
-            fg_color=COLORS["blue"],
-            hover_color=COLORS["blue_hover"],
+            fg_color=COLORS["control"],
+            hover_color=COLORS["control_hover"],
             font=("Cascadia Mono", 10, "bold"),
             command=self._save,
         ).grid(row=0, column=1, padx=(6, 0), sticky="ew")
@@ -309,7 +312,7 @@ class SensorDialog(ctk.CTkToplevel):
         self.protocol("WM_DELETE_WINDOW", self._close)
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=1)
 
         header = ctk.CTkFrame(self, corner_radius=0, fg_color=COLORS["surface"])
         header.grid(row=0, column=0, sticky="ew")
@@ -335,8 +338,8 @@ class SensorDialog(ctk.CTkToplevel):
             width=108,
             height=30,
             corner_radius=7,
-            fg_color=COLORS["blue"],
-            hover_color=COLORS["blue_hover"],
+            fg_color=COLORS["control"],
+            hover_color=COLORS["control_hover"],
             font=("Cascadia Mono", 9, "bold"),
             command=self.refresh,
         )
@@ -348,7 +351,7 @@ class SensorDialog(ctk.CTkToplevel):
         self.summary_label = ctk.CTkLabel(
             summary,
             text="WAITING FOR SENSOR DATA",
-            text_color=COLORS["cyan"],
+            text_color=COLORS["reading"],
             font=("Cascadia Mono", 10, "bold"),
         )
         self.summary_label.grid(row=0, column=0, sticky="w")
@@ -360,6 +363,39 @@ class SensorDialog(ctk.CTkToplevel):
         )
         self.updated_label.grid(row=0, column=1, sticky="e")
 
+        filters = ctk.CTkFrame(self, fg_color="transparent")
+        filters.grid(row=2, column=0, padx=22, pady=(0, 10), sticky="ew")
+        filters.grid_columnconfigure(0, weight=1)
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *_: self._apply_filters())
+        self.search_entry = ctk.CTkEntry(
+            filters,
+            textvariable=self.search_var,
+            placeholder_text="搜索名称、类型、读数或状态",
+            height=32,
+            corner_radius=8,
+            fg_color=COLORS["surface"],
+            border_color=COLORS["line"],
+            text_color=COLORS["text"],
+            font=("Microsoft YaHei UI", 10),
+        )
+        self.search_entry.grid(row=0, column=0, sticky="ew")
+        self.alerts_only = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            filters,
+            text="只看异常",
+            variable=self.alerts_only,
+            command=self._apply_filters,
+            checkbox_width=18,
+            checkbox_height=18,
+            corner_radius=5,
+            fg_color=COLORS["control"],
+            hover_color=COLORS["control_hover"],
+            border_color=COLORS["line"],
+            text_color=COLORS["muted"],
+            font=("Microsoft YaHei UI", 10),
+        ).grid(row=0, column=1, padx=(12, 0))
+
         self.sensor_list = ctk.CTkScrollableFrame(
             self,
             corner_radius=12,
@@ -370,7 +406,9 @@ class SensorDialog(ctk.CTkToplevel):
             scrollbar_button_color=COLORS["line"],
             scrollbar_button_hover_color=COLORS["muted"],
         )
-        self.sensor_list.grid(row=2, column=0, padx=22, pady=(0, 20), sticky="nsew")
+        self.sensor_list.grid(row=3, column=0, padx=22, pady=(0, 20), sticky="nsew")
+        # Keep the last snapshot so filtering never re-queries the iDRAC.
+        self._readings: list[SensorReading] = []
         self._render_empty("正在读取 iDRAC 传感器……")
         self._initial_refresh_job = self.after(120, self._initial_refresh)
 
@@ -408,7 +446,8 @@ class SensorDialog(ctk.CTkToplevel):
         if not self._alive():
             return
         readings = parse_sensor_output(result.stdout)
-        self._render_readings(readings)
+        self._readings = readings
+        self._render_readings(self._visible_readings())
         temperatures = sum(item.category == "TEMPERATURE" for item in readings)
         fans = sum(item.category == "FAN" for item in readings)
         alerts = sum(item.is_alert for item in readings)
@@ -418,7 +457,7 @@ class SensorDialog(ctk.CTkToplevel):
         )
         self.summary_label.configure(
             text=summary_text,
-            text_color=COLORS["red"] if alerts else COLORS["green"],
+            text_color=COLORS["red"] if alerts else COLORS["ok"],
         )
         self.updated_label.configure(
             text=f"UPDATED {datetime.now().strftime('%H:%M:%S')}  /  {result.elapsed_seconds:.2f}s"
@@ -427,6 +466,31 @@ class SensorDialog(ctk.CTkToplevel):
             "SENSOR",
             f"已读取 {len(readings)} 条记录；温度 {temperatures}，风扇 {fans}，告警 {alerts}。",
         )
+
+    def _visible_readings(self) -> list[SensorReading]:
+        query = self.search_var.get().strip().casefold()
+        alerts_only = self.alerts_only.get()
+        matches: list[SensorReading] = []
+        for reading in self._readings:
+            if alerts_only and not reading.is_alert:
+                continue
+            if query:
+                haystack = " ".join(
+                    (reading.name, reading.category, reading.reading, reading.status)
+                ).casefold()
+                if query not in haystack:
+                    continue
+            matches.append(reading)
+        return matches
+
+    def _apply_filters(self) -> None:
+        if not self._alive():
+            return
+        visible = self._visible_readings()
+        if self._readings and not visible:
+            self._render_empty("没有匹配的传感器记录。")
+            return
+        self._render_readings(visible)
 
     def _render_readings(self, readings: list[SensorReading]) -> None:
         for child in self.sensor_list.winfo_children():
@@ -442,7 +506,23 @@ class SensorDialog(ctk.CTkToplevel):
                 item[0],
             ),
         )
+        current_category: str | None = None
         for row_index, (_source_index, reading) in enumerate(ordered):
+            if reading.category != current_category:
+                current_category = reading.category
+                count = sum(item.category == current_category for _, item in ordered)
+                ctk.CTkLabel(
+                    self.sensor_list,
+                    text=f"{current_category}  ({count})",
+                    anchor="w",
+                    text_color=COLORS["text"],
+                    font=("Cascadia Mono", 9, "bold"),
+                ).pack(
+                    fill="x",
+                    padx=8,
+                    pady=(14 if row_index else 6, 4),
+                    anchor="w",
+                )
             row = ctk.CTkFrame(
                 self.sensor_list,
                 corner_radius=8,
@@ -480,7 +560,7 @@ class SensorDialog(ctk.CTkToplevel):
                 text=reading.reading or "—",
                 anchor="w",
                 justify="left",
-                text_color=COLORS["cyan"],
+                text_color=COLORS["reading"],
                 font=("Cascadia Mono", 9, "bold"),
             ).grid(row=0, column=1, padx=10, pady=8, sticky="ew")
 
@@ -489,7 +569,7 @@ class SensorDialog(ctk.CTkToplevel):
             elif reading.is_alert:
                 status_color = COLORS["red"]
             elif reading.status.strip().casefold() == "ok":
-                status_color = COLORS["green"]
+                status_color = COLORS["ok"]
             else:
                 status_color = COLORS["muted"]
             ctk.CTkLabel(
@@ -578,7 +658,7 @@ class FanConsole(ctk.CTk):
             height=36,
             corner_radius=18,
             fg_color=COLORS["surface_2"],
-            text_color=COLORS["cyan"],
+            text_color=COLORS["reading"],
             font=("Cascadia Mono", 11, "bold"),
         )
         self.server_chip.grid(row=0, column=1, padx=28, pady=25, sticky="e")
@@ -647,7 +727,7 @@ class FanConsole(ctk.CTk):
             variable=self.interlock_var,
             command=self._update_controls,
             progress_color=COLORS["amber"],
-            button_color=COLORS["text"],
+            button_color=COLORS["reading"],
             text_color=COLORS["text"],
             font=("Microsoft YaHei UI", 12, "bold"),
         )
@@ -736,8 +816,8 @@ class FanConsole(ctk.CTk):
             text="TEST",
             height=32,
             corner_radius=8,
-            fg_color=COLORS["blue"],
-            hover_color=COLORS["blue_hover"],
+            fg_color=COLORS["control"],
+            hover_color=COLORS["control_hover"],
             font=("Cascadia Mono", 9, "bold"),
             command=self._test_connection,
         )
@@ -803,7 +883,7 @@ class FanConsole(ctk.CTk):
                 height=74,
                 corner_radius=10,
                 fg_color=COLORS["surface_2"],
-                hover_color=COLORS["blue_hover"],
+                hover_color=COLORS["control_hover"],
                 border_width=1,
                 border_color=COLORS["line"],
                 text_color=COLORS["text"],
@@ -823,7 +903,7 @@ class FanConsole(ctk.CTk):
         self.slider_value = ctk.CTkLabel(
             preset_box,
             text="CUSTOM 10%",
-            text_color=COLORS["cyan"],
+            text_color=COLORS["reading"],
             font=("Cascadia Mono", 11, "bold"),
         )
         self.slider_value.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 3))
@@ -834,8 +914,8 @@ class FanConsole(ctk.CTk):
             number_of_steps=95,
             variable=self.custom_value,
             command=self._slider_changed,
-            progress_color=COLORS["blue"],
-            button_color=COLORS["cyan"],
+            progress_color=COLORS["reading"],
+            button_color=COLORS["reading"],
             button_hover_color=COLORS["text"],
         )
         self.speed_slider.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(2, 9))
@@ -844,8 +924,8 @@ class FanConsole(ctk.CTk):
             text="APPLY CUSTOM OUTPUT",
             height=38,
             corner_radius=8,
-            fg_color=COLORS["blue"],
-            hover_color=COLORS["blue_hover"],
+            fg_color=COLORS["control"],
+            hover_color=COLORS["control_hover"],
             font=("Cascadia Mono", 10, "bold"),
             command=lambda: self._set_speed(int(self.custom_value.get())),
         )
@@ -855,9 +935,9 @@ class FanConsole(ctk.CTk):
         warning = ctk.CTkFrame(
             parent,
             corner_radius=9,
-            fg_color="#2B2113",
+            fg_color="#241E12",
             border_width=1,
-            border_color="#6C4A13",
+            border_color="#5C4720",
         )
         warning.grid(row=2, column=0, padx=24, pady=(0, 20), sticky="ew")
         ctk.CTkLabel(
@@ -869,7 +949,7 @@ class FanConsole(ctk.CTk):
         ctk.CTkLabel(
             warning,
             text="固定低转速会削弱主板保护能力。请持续监控 CPU、内存与硬盘温度。",
-            text_color="#E8D5A8",
+            text_color="#E8A33D",
             font=("Microsoft YaHei UI", 10),
         ).pack(anchor="w", padx=14, pady=(0, 10))
 
@@ -907,7 +987,7 @@ class FanConsole(ctk.CTk):
             corner_radius=8,
             fg_color=COLORS["background"],
             border_width=0,
-            text_color="#BDD5E8",
+            text_color="#9A9A95",
             font=("Cascadia Mono", 10),
             activate_scrollbars=True,
         )
@@ -953,7 +1033,7 @@ class FanConsole(ctk.CTk):
             )
         )
         status = "READY" if configured else "SETUP REQUIRED"
-        color = COLORS["green"] if configured else COLORS["amber"]
+        color = COLORS["ok"] if configured else COLORS["amber"]
         self.connection_status_label.configure(text=status, text_color=color)
         self.server_chip.configure(text=f"●  IDRAC  {status}", text_color=color)
 
@@ -968,7 +1048,7 @@ class FanConsole(ctk.CTk):
     def _connection_ok(self, _result: CommandResult) -> None:
         self.server_chip.configure(
             text="●  IDRAC  ONLINE",
-            text_color=COLORS["green"],
+            text_color=COLORS["ok"],
         )
 
     def _enable_manual(self) -> None:
@@ -981,8 +1061,8 @@ class FanConsole(ctk.CTk):
         self.manual_mode = True
         self.mode_badge.configure(
             text="MANUAL OVERRIDE",
-            fg_color="#3A1A1D",
-            text_color="#FCA5A5",
+            fg_color="#2A1618",
+            text_color="#E5484D",
         )
         self._update_controls()
 
@@ -994,8 +1074,8 @@ class FanConsole(ctk.CTk):
         self.interlock_var.set(False)
         self.mode_badge.configure(
             text="AUTO THERMAL",
-            fg_color="#102C21",
-            text_color="#86EFAC",
+            fg_color="#1A1A19",
+            text_color="#9A9A95",
         )
         self._update_controls()
 
@@ -1013,7 +1093,7 @@ class FanConsole(ctk.CTk):
         self.custom_value.set(percent)
         self.slider_value.configure(text=f"CUSTOM {percent}%")
         self.gauge.set_value(percent)
-        self.output_status.configure(text=f"ACTIVE · {percent}%", text_color=COLORS["cyan"])
+        self.output_status.configure(text=f"ACTIVE · {percent}%", text_color=COLORS["reading"])
 
     def _submit(self, request, success=None, *, finished=None, log_stdout: bool = True) -> bool:
         if self.busy:
@@ -1096,7 +1176,7 @@ class FanConsole(ctk.CTk):
         self.speed_slider.configure(state=speed_state)
         self.output_status.configure(
             text=(f"ACTIVE · {self.current_speed}%" if self.manual_mode else "LOCKED"),
-            text_color=(COLORS["cyan"] if self.manual_mode else COLORS["amber"]),
+            text_color=(COLORS["reading"] if self.manual_mode else COLORS["amber"]),
         )
 
     def _append_log(self, level: str, message: str) -> None:
