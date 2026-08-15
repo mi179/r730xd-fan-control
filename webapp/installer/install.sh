@@ -532,7 +532,37 @@ uci set firewall.r730xd_fan_ipmi.target='ACCEPT'
 
 fw4 check >/dev/null
 uci commit firewall
-/etc/init.d/firewall reload >/dev/null
+
+# `firewall reload` returns non-zero on hosts that carry stale third-party
+# includes (miniupnpd, passwall, shadowsocksr ...) even when the ruleset itself
+# loaded correctly -- fw4 reports the failing include, not a failure of ours.
+# This host is one of them (E-019), so a bare reload made the installer
+# unusable here. Ignoring the exit code outright is not acceptable either: a
+# genuinely failed reload would leave the container without its zone. Tolerate
+# it only when the result is verifiably correct -- the syntax check still
+# passes and all three project rules are live in the kernel. If the ruleset
+# cannot be read back, fail closed.
+if /etc/init.d/firewall reload >/dev/null 2>&1; then
+    :
+else
+    warn "firewall reload exited non-zero; verifying the live ruleset before continuing"
+    fw4 check >/dev/null 2>&1 || die "firewall ruleset no longer validates after reload"
+    command -v nft >/dev/null 2>&1 || die "firewall reload failed and nft is unavailable to verify the result"
+    live_ruleset=$(nft list table inet fw4 2>/dev/null || true)
+    [ -n "$live_ruleset" ] || die "firewall reload failed and the live ruleset could not be read"
+    missing_rules=""
+    for rule_name in \
+        Allow-R730xd-Fan-Web-from-LAN \
+        Allow-R730xd-Web-to-iDRAC-Redfish \
+        Allow-R730xd-Web-to-iDRAC-IPMI
+    do
+        printf '%s\n' "$live_ruleset" | grep -qF "$rule_name" \
+            || missing_rules="$missing_rules $rule_name"
+    done
+    [ -z "$missing_rules" ] \
+        || die "firewall reload failed and these rules are not live:$missing_rules"
+    warn "pre-existing unrelated firewall includes failed; all three project rules are live, continuing"
+fi
 
 STAGE="service-start"
 compose config -q
