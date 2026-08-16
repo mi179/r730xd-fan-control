@@ -16,6 +16,7 @@
 | T-013 | 部署 HTTPS 反代并设 `WEB_COOKIE_SECURE=true` / `TRUSTED_ORIGINS`；同时处理反代后 `REMOTE_ADDR` 塌缩导致限速退化为全局桶的问题（ProxyFix 或共享网络命名空间） | Backlog（D-021 接受风险，不阻塞上线） | D-011, D-019, D-021 |
 | T-010 | 部署 Web v0.4.0 到 WRT：镜像在 WRT 上原生构建（Windows 侧已无 Docker daemon），`docker save` 回传后仍走 `build_openwrt_bundle.ps1` + `install.sh` 正规流程，保留备份/哈希/回滚/verify | **Done 2026-08-16**（image `fd1db718…`, installer / verify / live smoke 全通过，E-030） | D-013, D-015, E-030 |
 | T-014 | 找到不会触发 iDRAC8 session 泄漏的**完整** SDR 读取路径：评估不同 `ipmitool` 版本、FreeIPMI 或分段读取；真机验证前先设计会话回收与重试上限 | Open；当前 D-022 只保留 83 条部分结果，不能宣称完整扫描可用 | D-022, E-031 |
+| T-016 | 功耗页不得把 iDRAC 的无效全零 `PowerMetrics` 显示为真实 0 W；改用本地历史样本统计并标明区间与样本数；完整扫描分类计数与 partial 缺项说明 | **Done 2026-08-16**（D-023, E-032）。注：提交 `1c2e7f1` 的信息里把本项误标为 T-014，实际 T-014 仍 Open | D-023, E-032 |
 | T-015 | 将本地提交 push 到 `origin/main`，创建 `web-v0.4.0` tag 与 GitHub Release，并上传 E-030 的离线包和 `.sha256` | Open；线上已部署但远端尚未发布，属于需用户明确授权的外部发布动作 | D-013, E-030 |
 
 关闭任务时把状态改为 Done + 日期，不删除行。
