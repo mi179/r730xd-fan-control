@@ -7,7 +7,7 @@
 | T-003 | 明确桌面版/Web 版版本号策略（统一还是各自独立），写进 README | **Done 2026-07-28**（独立版本 + 单一来源 + tag 规范，D-013；build 脚本已断言一致性，E-018） | E-003, E-018 |
 | T-004 | 发布流程固化：发布前跑两套测试 + 记录产物 SHA-256 到 EVIDENCE.md | **Done 2026-08-16**（Web v0.4.0 首次完整走通：测试 → WRT 原生构建 → 离线包 → SHA-256 → installer → verify/live smoke，E-030） | E-004, E-030 |
 | T-005 | 写 HTTPS 反向代理部署文档（Caddy/Nginx 前置 + `WEB_COOKIE_SECURE=true`） | **Done 2026-08-15**（`webapp/README.md`「凭据传输」节，含 Caddy/nginx 两版与 `TRUSTED_ORIGINS`） | D-011 |
-| T-006 | 为 `webapp/tests/` 的 live 脚本（live_smoke / live_idrac_readonly / inspect_idrac_network）补一段使用说明 | Open | E-016 |
+| T-006 | 为 `webapp/tests/` 的 live 脚本（live_smoke / live_idrac_readonly / inspect_idrac_network）补一段使用说明 | Open；同目录的 `dev_preview.py` 已于 2026-08-17 在 `webapp/README.md` 有说明，可作为格式参考 | E-016 |
 | T-007 | 治理文件引入 | **Done 2026-07-28** | D-012 |
 | T-008 | 两端前端统一为近黑单色设计语言，删除装饰性元素 | **Done 2026-08-15**（D-014，E-020） | D-014 |
 | T-009 | Web 版遥测历史 SQLite 持久化 + 时间区间查询 | **Done 2026-08-15**（D-015，E-021..E-022） | D-015 |
