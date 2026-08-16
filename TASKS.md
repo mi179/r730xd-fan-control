@@ -17,6 +17,8 @@
 | T-010 | 部署 Web v0.4.0 到 WRT：镜像在 WRT 上原生构建（Windows 侧已无 Docker daemon），`docker save` 回传后仍走 `build_openwrt_bundle.ps1` + `install.sh` 正规流程，保留备份/哈希/回滚/verify | **Done 2026-08-16**（image `fd1db718…`, installer / verify / live smoke 全通过，E-030） | D-013, D-015, E-030 |
 | T-014 | 找到不会触发 iDRAC8 session 泄漏的**完整** SDR 读取路径：评估不同 `ipmitool` 版本、FreeIPMI 或分段读取；真机验证前先设计会话回收与重试上限 | Open；当前 D-022 只保留 83 条部分结果，不能宣称完整扫描可用 | D-022, E-031 |
 | T-016 | 功耗页不得把 iDRAC 的无效全零 `PowerMetrics` 显示为真实 0 W；改用本地历史样本统计并标明区间与样本数；完整扫描分类计数与 partial 缺项说明 | **Done 2026-08-16**（D-023, E-032）。注：提交 `1c2e7f1` 的信息里把本项误标为 T-014，实际 T-014 仍 Open | D-023, E-032 |
-| T-015 | 将本地提交 push 到 `origin/main`，创建 `web-v0.4.0` tag 与 GitHub Release，并上传 E-030 的离线包和 `.sha256` | Open；线上已部署但远端尚未发布，属于需用户明确授权的外部发布动作 | D-013, E-030 |
+| T-015 | 将本地提交 push 到 `origin/main` | **Done 2026-08-16**（用户明确授权 push） | D-013, E-033 |
+| T-018 | 创建 `web-v0.4.1` tag 与 GitHub Release，上传 E-033 的离线包和 `.sha256` | Open；用户 2026-08-16 明确本轮只 push、不对外发布。注：v0.4.0 已被 v0.4.1 取代，不单独发布 | D-013, E-033 |
+| T-017 | 给 `install.sh` 加 rollback 镜像标签保留策略（只保留最近 N 个） | Open；当前每次部署单调增长，8 个标签已让 overlay 可用从 358 MB 降到 276 MB（E-034） | E-034 |
 
 关闭任务时把状态改为 Done + 日期，不删除行。

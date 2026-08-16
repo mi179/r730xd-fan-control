@@ -16,16 +16,17 @@
 
 ## The one-line version
 
-**Windows GUI v0.4.0 和 OpenWrt Docker Web 版 v0.3.1 都已发布可用**；Web 版跑在
-`192.168.5.2:8088`。项目代码成熟，治理文件 2026-07-28 才补上，最缺的是 CI（T-002）
-和版本号策略（T-003）。
+**Windows GUI v0.4.0 和 OpenWrt Docker Web 版 v0.4.1 都已发布可用**；Web 版跑在
+`192.168.5.2:8088`（E-033）。两条产品线各自独立版本（D-013）。CI（T-002）与版本号
+策略（T-003）已于 2026-07-28 完成。
 
 ## Environment
 
 - 宿主 Windows 11；开发在 WSL Ubuntu（`/mnt/d/UserData/Documents/r730xd_fan`），
   GUI 用 `.venv-win` 的 Windows Python 运行，测试在 WSL 用 `.venv-wsl` 跑。
-- iDRAC 在 `192.168.5.151`（DHCP）；WRT 宿主 `root@192.168.5.2`，部署目录
-  `/opt/r730xd-fan-web`。
+- iDRAC 走 DHCP，**地址不是稳定身份**——代码按 MAC `d0:94:66:8c:e0:e3` 重发现；
+  2026-08-16 ARP 实测为 `192.168.5.130`（此前文档记的 `192.168.5.151` 已失效）。
+  WRT 宿主 `root@192.168.5.2`，部署目录 `/opt/r730xd-fan-web`。
 - 远程仓库只有一个：`https://github.com/mi179/r730xd-fan-control`。
 - Dell 官方手册 PDF 在仓库外：`D:\UserData\Documents\r730xd-ompublication-zh-cn.pdf`。
 

@@ -1,13 +1,14 @@
 # STATUS
 
-Last updated: 2026-08-16（Web v0.4.0 上线 + iDRAC8 partial SDR 兼容）
+Last updated: 2026-08-16（Web v0.4.1 上线 + 功耗统计修正）
 
 ## Where we are
 
 **两种交付形态均已发布可用。** 桌面一体版 `R730xdFanConsole-AllInOne-v0.4.0.exe`
-已构建（内嵌 BMC.msi 自动安装）；Web v0.4.0 已于 2026-08-16 通过正式离线 installer
+已构建（内嵌 BMC.msi 自动安装）；Web v0.4.1 已于 2026-08-16 通过正式离线 installer
 部署到 WRT（`root@192.168.5.2`），访问地址 `http://192.168.5.2:8088`。新镜像、
-离线包和 SHA-256 均在 `dist/docker/`，详见 E-030；远端 Git/tag/Release 尚未发布。
+离线包和 SHA-256 均在 `dist/docker/`，详见 E-033。本地提交已 push 到 origin/main；
+tag 与 GitHub Release 仍未发布（T-018）。
 
 本项目此前的短板不是代码而是**过程记忆**：Git 只有一次 Publish 提交（E-001），
 没有 CI（E-002），没有决策/证据记录。2026-07-28 引入本套治理骨架（D-012），
@@ -17,8 +18,8 @@ Last updated: 2026-08-16（Web v0.4.0 上线 + iDRAC8 partial SDR 兼容）
 |---|---|
 | Windows GUI（`r730xd_fan/` + `main.py`） | 完成，v0.4.0 |
 | 一体 EXE（含 BMC 自动安装） | 已构建，本地 dist，哈希见 E-004 |
-| Web 版（`webapp/`） | v0.4.0 已部署到 WRT；常规遥测与控制可用，完整 SDR 只能返回带标记的部分结果（E-031） |
-| Docker 离线安装包 | v0.4.0 已构建并用于 WRT 部署；GitHub Releases 仍只有 v0.3.1（T-015） |
+| Web 版（`webapp/`） | v0.4.1 已部署到 WRT；常规遥测与控制可用。完整 SDR 只能返回带标记的部分结果（E-031，T-014）；功耗平均/最小/最大改由本地样本统计（D-023，E-032） |
+| Docker 离线安装包 | v0.4.1 已构建并用于 WRT 部署（E-033）；GitHub Releases 仍只有 v0.3.1（T-018） |
 | 测试 | 两套 unittest 存在（E-016），CI 于 2026-07-28 建立（E-017） |
 | 治理文件 | 2026-07-28 建立 |
 
@@ -38,8 +39,10 @@ Last updated: 2026-08-16（Web v0.4.0 上线 + iDRAC8 partial SDR 兼容）
 
 - **T-014** —— 找到不会触发 iDRAC8 session 泄漏的完整 SDR 读取路径。当前 D-022
   只诚实保留 83 条 partial 数据，不能称为完整扫描。
-- **T-015** —— push 当前提交，创建 `web-v0.4.0` tag 与 GitHub Release；这是外部发布，
-  需用户明确授权后执行。
+- **T-018** —— 创建 `web-v0.4.1` tag 与 GitHub Release；这是外部发布，需用户明确
+  授权后执行（2026-08-16 用户明确本轮只 push，不发布）。
+- **T-017** —— `install.sh` 的 rollback 镜像标签无保留策略，已让 overlay 可用从
+  358 MB 降到 276 MB（E-034）。
 - **T-006** —— 为三个 live 只读脚本补使用说明。
 - **T-012 / T-013** —— Redfish 指纹固定与 HTTPS 反代仍是已接受的 LAN-only backlog；
   D-021 / E-029 的复议触发条件不变。
