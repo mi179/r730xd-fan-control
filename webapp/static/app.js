@@ -50,6 +50,7 @@
     powerMaximum: $("powerMaximum"),
     powerAllocated: $("powerAllocated"),
     powerCapacity: $("powerCapacity"),
+    powerStatsNote: $("powerStatsNote"),
     controlGate: $("controlGate"),
     authenticatedWorkspace: $("authenticatedWorkspace"),
     operatorSensorsButton: $("operatorSensorsButton"),
@@ -95,6 +96,7 @@
   ];
 
   const RANGE_SECONDS = { "5m": 300, "1h": 3600, "6h": 21600, "24h": 86400 };
+  const RANGE_LABELS = { "5m": "5 分钟", "1h": "1 小时", "6h": "6 小时", "24h": "24 小时" };
 
   const state = {
     authenticated: false,
@@ -123,6 +125,8 @@
     trendGeometry: null,
     sensorSort: { key: "", direction: 1 },
     sensorsPartial: false,
+    latestPower: {},
+    powerStatistics: null,
   };
 
   class ApiError extends Error {
@@ -501,18 +505,46 @@
     dom.fanList.replaceChildren(fragment);
   }
 
-  function renderPowerDetail(power) {
-    const pairs = [
+  function watts(value) {
+    const number = finite(value);
+    return number === null ? "--" : `${formatNumber(number, number % 1 ? 1 : 0)} W`;
+  }
+
+  /* Average/minimum/maximum come from our own stored samples, not from the
+     BMC: iDRAC8 2.70 reports a live wattage next to an all-zero PowerMetrics
+     block, which the backend now drops rather than publish as a real 0 W. The
+     labels say which range the numbers describe so they are not mistaken for
+     BMC lifetime extremes. */
+  function renderPowerDetail(power = state.latestPower) {
+    state.latestPower = power || {};
+    for (const [element, key] of [
       [dom.powerConsumed, "consumed_watts"],
-      [dom.powerAverage, "average_watts"],
-      [dom.powerMinimum, "minimum_watts"],
-      [dom.powerMaximum, "maximum_watts"],
       [dom.powerAllocated, "allocated_watts"],
       [dom.powerCapacity, "capacity_watts"],
-    ];
-    for (const [element, key] of pairs) {
-      const value = finite(power?.[key]);
-      element.textContent = value === null ? "--" : `${formatNumber(value, value % 1 ? 1 : 0)} W`;
+    ]) {
+      element.textContent = watts(state.latestPower[key]);
+    }
+
+    const stats = state.powerStatistics;
+    const fromBmc = (key) => finite(state.latestPower[key]);
+    for (const [element, bmcKey, statKey] of [
+      [dom.powerAverage, "average_watts", "average"],
+      [dom.powerMinimum, "minimum_watts", "minimum"],
+      [dom.powerMaximum, "maximum_watts", "maximum"],
+    ]) {
+      const reported = fromBmc(bmcKey);
+      element.textContent = reported !== null ? watts(reported) : watts(stats?.[statKey]);
+    }
+
+    const usingBmc = fromBmc("average_watts") !== null;
+    const count = stats?.count || 0;
+    if (usingBmc) {
+      dom.powerStatsNote.textContent = "平均 / 最小 / 最大由 iDRAC 报告";
+    } else if (count) {
+      dom.powerStatsNote.textContent =
+        `平均 / 最小 / 最大按当前趋势区间（${RANGE_LABELS[state.trendRange] || state.trendRange}）的 ${count} 个图表样本计算 · iDRAC 未提供有效数值`;
+    } else {
+      dom.powerStatsNote.textContent = "iDRAC 未提供有效的平均 / 最小 / 最大功耗，本地样本也还不足";
     }
   }
 
@@ -913,6 +945,8 @@
     renderDelta(dom.temperatureDelta, current, previous, "max_temp_c", "°C");
     renderDelta(dom.fanDelta, current, previous, "avg_fan_rpm", "RPM");
     renderDelta(dom.powerDelta, current, previous, "power_watts", "W");
+    state.powerStatistics = payload.statistics?.power_watts || null;
+    renderPowerDetail();
     drawTrend(samples);
   }
 
@@ -1330,15 +1364,7 @@
       name,
       gloss: sensorGloss(name),
       type,
-      typeLabel: {
-        temperature: "温度",
-        fan: "风扇",
-        power: "功耗",
-        voltage: "电压",
-        current: "电流",
-        system: "系统",
-        other: "其他",
-      }[type],
+      typeLabel: TYPE_LABELS[type],
       reading,
       status: text(record?.status ?? record?.state ?? record?.health, "UNKNOWN"),
     };
@@ -1391,9 +1417,47 @@
     return filtered;
   }
 
+  const TYPE_LABELS = {
+    temperature: "温度",
+    fan: "风扇",
+    power: "功耗",
+    voltage: "电压",
+    current: "电流",
+    system: "系统",
+    other: "其他",
+  };
+
+  /* A partial SDR walk stops before it reaches the power/voltage/current
+     records, so those categories legitimately come back empty. Saying
+     "没有匹配的传感器" there would blame the filter for missing data that the
+     scan never retrieved. */
+  function emptySensorMessage() {
+    if (!state.allSensors.length) return "暂无传感器记录";
+    const type = dom.sensorTypeFilter.value;
+    const query = dom.sensorSearchInput.value.trim();
+    if (state.sensorsPartial && type !== "all" && !query && !dom.sensorAlertsOnly.checked) {
+      return `当前部分结果未包含${TYPE_LABELS[type] || type}记录 —— ipmitool 在遍历完 SDR 前退出`;
+    }
+    return "没有匹配的传感器";
+  }
+
+  function refreshSensorTypeCounts() {
+    const counts = new Map();
+    for (const sensor of state.allSensors) {
+      counts.set(sensor.type, (counts.get(sensor.type) || 0) + 1);
+    }
+    for (const option of dom.sensorTypeFilter.options) {
+      const base = option.value === "all" ? "全部类型" : TYPE_LABELS[option.value] || option.value;
+      option.textContent = state.allSensors.length
+        ? `${base}（${option.value === "all" ? state.allSensors.length : counts.get(option.value) || 0}）`
+        : base;
+    }
+  }
+
   function renderSensorRows() {
     const filtered = filteredSensors();
     renderSensorChips();
+    refreshSensorTypeCounts();
     dom.exportSensorsButton.disabled = !filtered.length;
 
     const fragment = document.createDocumentFragment();
@@ -1402,7 +1466,7 @@
       const cell = document.createElement("td");
       cell.colSpan = 4;
       cell.className = "empty";
-      cell.textContent = state.allSensors.length ? "没有匹配的传感器" : "暂无传感器记录";
+      cell.textContent = emptySensorMessage();
       row.append(cell);
       fragment.append(row);
     } else {

@@ -132,13 +132,16 @@
           <div><dt>已分配</dt><dd id="powerAllocated">--</dd></div>
           <div><dt>容量</dt><dd id="powerCapacity">--</dd></div>
         </dl>
+        <p id="powerStatsNote" class="block-note">—</p>
       </div>
     </section>
 
     <section class="sensors" id="sensorsPanel" aria-labelledby="sensorsHeading">
       <div class="block-head">
-        <h2 id="sensorsHeading">完整传感器扫描</h2>
-            <p class="block-note">iDRAC 的全部 SDR 记录，无需登录即可查看。每条记录旁给出中文注解。</p>
+        <div>
+          <h2 id="sensorsHeading">完整传感器扫描</h2>
+          <p class="block-note">iDRAC 的全部 SDR 记录，无需登录即可查看。每条记录旁给出中文注解。</p>
+        </div>
         <div class="block-tools">
           <span id="sensorDialogMeta" class="meta">尚未读取</span>
           <button id="exportSensorsButton" class="button ghost" type="button" disabled>导出 CSV</button>

@@ -1222,6 +1222,35 @@ def _history_sample_from_telemetry(
     }
 
 
+def _sample_statistics(
+    samples: Sequence[Mapping[str, Any]], key: str
+) -> dict[str, Any]:
+    """Average/min/max over the samples the caller was actually given.
+
+    The dashboard needs these because iDRAC8 hands back all-zero PowerMetrics
+    (E-032). Deriving them from our own stored readings is honest as long as the
+    scope is stated: these describe the samples returned with this response, and
+    long ranges are already downsampled in SQL, so they are extremes of the
+    plotted series rather than of every raw reading ever taken.
+    """
+
+    values = [
+        number
+        for sample in samples
+        if isinstance(sample, Mapping)
+        for number in [_number(sample.get(key))]
+        if number is not None
+    ]
+    if not values:
+        return {"count": 0, "average": None, "minimum": None, "maximum": None}
+    return {
+        "count": len(values),
+        "average": round(sum(values) / len(values), 2),
+        "minimum": min(values),
+        "maximum": max(values),
+    }
+
+
 def _public_telemetry_value(value: Any) -> dict[str, Any]:
     """Build an explicit anonymous response; new backend fields stay private."""
 
@@ -1345,13 +1374,28 @@ def _parse_redfish_telemetry(
         }
         metrics = control.get("PowerMetrics")
         if isinstance(metrics, dict):
-            power.update(
-                {
-                    "average_watts": _number(metrics.get("AverageConsumedWatts")),
-                    "minimum_watts": _number(metrics.get("MinConsumedWatts")),
-                    "maximum_watts": _number(metrics.get("MaxConsumedWatts")),
-                }
+            summary = {
+                "average_watts": _number(metrics.get("AverageConsumedWatts")),
+                "minimum_watts": _number(metrics.get("MinConsumedWatts")),
+                "maximum_watts": _number(metrics.get("MaxConsumedWatts")),
+            }
+            # iDRAC8 firmware 2.70 reports PowerConsumedWatts correctly but
+            # fills PowerMetrics with zeros (E-032). A chassis drawing >0 W
+            # cannot have averaged, peaked and bottomed at exactly 0 W, so the
+            # three are not a measurement — publishing them would render as a
+            # confident "0 W" next to a live 135 W. Drop the whole group rather
+            # than guess which member is real; the dashboard falls back to the
+            # statistics computed from our own stored samples.
+            consumed = power.get("consumed_watts")
+            values = list(summary.values())
+            impossible = (
+                consumed is not None
+                and consumed > 0
+                and all(value is not None for value in values)
+                and all(value == 0 for value in values)
             )
+            if not impossible:
+                power.update(summary)
         power = {key: value for key, value in power.items() if value is not None}
     alerts = _alerts_from_records([*temperatures, *fans])
     return {
@@ -2142,6 +2186,14 @@ def create_app(
                 "samples": samples,
                 "range": requested or None,
                 "source": source,
+                # Scoped to `samples` above, so the dashboard can label these
+                # as statistics of the plotted range instead of implying they
+                # came from the BMC.
+                "statistics": {
+                    "power_watts": _sample_statistics(samples, "power_watts"),
+                    "max_temp_c": _sample_statistics(samples, "max_temp_c"),
+                    "avg_fan_rpm": _sample_statistics(samples, "avg_fan_rpm"),
+                },
                 "persistence": {
                     "enabled": bool(store is not None and store.enabled),
                     "ranges": sorted(HISTORY_RANGES, key=HISTORY_RANGES.get),

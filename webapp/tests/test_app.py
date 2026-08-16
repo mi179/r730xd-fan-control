@@ -30,7 +30,9 @@ from app import (  # noqa: E402
     _FingerprintAdapter,
     _login_rate_key,
     _normalise_fingerprint,
+    _parse_redfish_telemetry,
     _redfish_client_from_environment,
+    _sample_statistics,
     create_app,
 )
 
@@ -1465,6 +1467,111 @@ class RedfishFingerprintPinningTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("REDFISH_TLS_FINGERPRINT", None)
             self.assertIs(_redfish_client_from_environment(), requests.get)
+
+
+class ImpossiblePowerMetricsTests(unittest.TestCase):
+    """iDRAC8 2.70 returns a live wattage plus an all-zero PowerMetrics block."""
+
+    @staticmethod
+    def _payload(consumed, average, minimum, maximum):
+        return {
+            "PowerControl": [
+                {
+                    "PowerConsumedWatts": consumed,
+                    "PowerCapacityWatts": 896,
+                    "PowerAllocatedWatts": 896,
+                    "PowerMetrics": {
+                        "AverageConsumedWatts": average,
+                        "MinConsumedWatts": minimum,
+                        "MaxConsumedWatts": maximum,
+                    },
+                }
+            ]
+        }
+
+    def test_all_zero_metrics_beside_a_live_reading_are_dropped(self) -> None:
+        power = _parse_redfish_telemetry({}, self._payload(135, 0, 0, 0))["power"]
+        self.assertEqual(power["consumed_watts"], 135.0)
+        # Capacity and allocation are unrelated fields and must survive.
+        self.assertEqual(power["capacity_watts"], 896.0)
+        self.assertEqual(power["allocated_watts"], 896.0)
+        for key in ("average_watts", "minimum_watts", "maximum_watts"):
+            self.assertNotIn(key, power, f"{key} is not a measurement here")
+
+    def test_genuine_metrics_are_preserved(self) -> None:
+        power = _parse_redfish_telemetry({}, self._payload(135, 133, 128, 142))["power"]
+        self.assertEqual(power["average_watts"], 133.0)
+        self.assertEqual(power["minimum_watts"], 128.0)
+        self.assertEqual(power["maximum_watts"], 142.0)
+
+    def test_a_genuinely_idle_chassis_keeps_its_zeros(self) -> None:
+        # consumed == 0 makes all-zero metrics plausible, so do not discard.
+        power = _parse_redfish_telemetry({}, self._payload(0, 0, 0, 0))["power"]
+        self.assertEqual(power["average_watts"], 0.0)
+        self.assertEqual(power["minimum_watts"], 0.0)
+        self.assertEqual(power["maximum_watts"], 0.0)
+
+    def test_a_partially_zero_block_is_left_alone(self) -> None:
+        power = _parse_redfish_telemetry({}, self._payload(135, 0, 0, 142))["power"]
+        self.assertEqual(power["maximum_watts"], 142.0)
+        self.assertEqual(power["average_watts"], 0.0)
+
+
+class SampleStatisticsTests(unittest.TestCase):
+    def test_nulls_are_ignored_and_do_not_skew_the_average(self) -> None:
+        samples = [
+            {"power_watts": 131},
+            {"power_watts": None},
+            {"power_watts": 138},
+            {},
+            {"power_watts": 133},
+        ]
+        stats = _sample_statistics(samples, "power_watts")
+        self.assertEqual(stats["count"], 3)
+        self.assertEqual(stats["minimum"], 131)
+        self.assertEqual(stats["maximum"], 138)
+        self.assertEqual(stats["average"], 134.0)
+
+    def test_no_usable_samples_reports_zero_count_not_zero_watts(self) -> None:
+        stats = _sample_statistics([{"power_watts": None}, {}], "power_watts")
+        self.assertEqual(
+            stats, {"count": 0, "average": None, "minimum": None, "maximum": None}
+        )
+
+    def test_history_response_carries_statistics_for_every_series(self) -> None:
+        app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "history-statistics",
+                "AUTH_MODE": "static",
+                "HISTORY_MAX_SAMPLES": 10,
+                "REQUIRE_ORIGIN": False,
+            },
+            ipmi_runner=FakeIpmi(),
+            redfish_get=FakeRedfish(),
+        )
+        backend = app.extensions["r730xd_backend"]
+        backend.state.config = configured_connection()
+        config, revision = backend.state.connection_snapshot()
+        for index, watts in enumerate((131, 135, 138)):
+            payload = {
+                "observed_at": f"2026-08-16T00:00:0{index}Z",
+                "source": "redfish",
+                "temperatures": [{"name": "CPU1", "celsius": 40 + index}],
+                "fans": [{"name": "Fan1", "rpm": 4000 + index}],
+                "power": {"consumed_watts": watts},
+            }
+            backend.collect_telemetry = lambda _config, item=payload: item
+            backend._refresh_telemetry(config, revision)
+
+        data = app.test_client().get("/api/telemetry/history").get_json()["data"]
+        power = data["statistics"]["power_watts"]
+        self.assertEqual(power["count"], 3)
+        self.assertEqual(power["minimum"], 131)
+        self.assertEqual(power["maximum"], 138)
+        self.assertEqual(power["average"], 134.67)
+        self.assertEqual(data["statistics"]["max_temp_c"]["maximum"], 42)
+        self.assertEqual(data["statistics"]["avg_fan_rpm"]["count"], 3)
 
 
 class TelemetryStoreTests(unittest.TestCase):
