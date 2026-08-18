@@ -1,0 +1,7 @@
+# 测试期依赖：生产镜像不需要，Dockerfile 只装 requirements.txt。
+-r requirements.txt
+
+# test_app.py 的 RedfishFingerprintPinningTests 要现签一张自签证书，
+# 用真实 TLS 服务器证明指纹不匹配时凭据不会发出去（D-018）。
+# 不装它这条安全测试会以 ModuleNotFoundError 报错而不是跳过——这是故意的。
+cryptography>=42,<51

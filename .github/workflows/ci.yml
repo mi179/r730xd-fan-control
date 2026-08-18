@@ -41,6 +41,6 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install webapp dependencies
-        run: pip install -r webapp/requirements.txt
+        run: pip install -r webapp/requirements-dev.txt
       - name: Web unit tests
         run: python -m unittest discover -s webapp/tests -p "test_*.py" -v
