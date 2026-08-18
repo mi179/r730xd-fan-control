@@ -28,9 +28,14 @@
 
 从 [GitHub Releases](https://github.com/mi179/r730xd-fan-control/releases) 下载并放在同一目录：
 
-- `R730xdFan-Web-Docker-v0.4.1.tar.gz`
-- `R730xdFan-Web-Docker-v0.4.1.tar.gz.sha256`
+- `R730xdFan-Web-Docker-v<版本>.tar.gz`
+- `R730xdFan-Web-Docker-v<版本>.tar.gz.sha256`
 - `Install-R730xdFan-Web.ps1`
+
+> **当前公开 Release 只有 `web-v0.3.1`。** 仓库代码与 `webapp/installer/VERSION`
+> 已经是 v0.4.1，但 v0.4.0 / v0.4.1 的离线包只存在于本地构建产物中（哈希见
+> `EVIDENCE.md` 的 E-030 / E-033），尚未对外发布（T-018）。要用最新版请自行按
+> 「版本与发布」一节构建。
 
 在 Windows PowerShell 执行：
 
