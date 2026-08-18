@@ -1,64 +1,23 @@
 from __future__ import annotations
 
-import subprocess
-import threading
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
 
 import customtkinter as ctk
 
+from . import presenters
 from .config import IpmiSettings
+from .console import POLL_SECONDS, FanController
 from .ipmi import (
     CommandResult,
     KeyReading,
     SensorReading,
-    auto_mode_request,
-    connection_test_request,
-    execute,
-    manual_mode_request,
     parse_sensor_output,
-    sensor_snapshot_request,
-    speed_request,
     summarize_key_readings,
 )
-
-COLORS = {
-    # Monochrome on near-black; colour carries meaning. Amber and red mean
-    # warning and critical and are used for nothing else. Mirrors the rule in
-    # webapp/static/app.css so both front ends read as one product.
-    "background": "#0A0A0A",
-    "surface": "#131312",
-    "surface_2": "#1A1A19",
-    "line": "#2A2A28",
-    "text": "#D8D5CF",
-    "muted": "#94918B",
-    "control": "#2E2E2C",
-    "control_hover": "#3B3B38",
-    "reading": "#B9B5AD",
-    "ok": "#94918B",
-    "amber": "#D8973A",
-    "red": "#D8474C",
-    "red_hover": "#BE3D42",
-}
-
-
-# Chinese display names for the SDR categories. The category codes themselves
-# stay English (they are data, asserted in tests); only the label is localised.
-CATEGORY_LABELS = {
-    "TEMPERATURE": "温度",
-    "FAN": "风扇",
-    "POWER": "功耗",
-    "VOLTAGE": "电压",
-    "CURRENT": "电流",
-    "SYSTEM": "其他",
-}
-
-# How often the readings row re-reads the sensors. Deliberately slow: a full
-# `sdr elist all` is a heavy operation for an iDRAC8 BMC, and hammering it is
-# what exhausts IPMI sessions (see D-022 / E-031 on the Web side). A fan
-# console does not need sub-minute resolution.
-READINGS_POLL_SECONDS = 60
+from .view import theme
+from .view.theme import COLORS
 
 
 class ReadingCard(ctk.CTkFrame):
@@ -384,15 +343,6 @@ class ConnectionDialog(ctk.CTkToplevel):
 
 
 class SensorDialog(ctk.CTkToplevel):
-    CATEGORY_ORDER = {
-        "TEMPERATURE": 0,
-        "FAN": 1,
-        "POWER": 2,
-        "VOLTAGE": 3,
-        "CURRENT": 4,
-        "SYSTEM": 5,
-    }
-
     def __init__(self, owner: FanConsole) -> None:
         super().__init__(owner, fg_color=COLORS["background"])
         self.owner = owner
@@ -539,40 +489,22 @@ class SensorDialog(ctk.CTkToplevel):
         readings = parse_sensor_output(result.stdout)
         self._readings = readings
         self._render_readings(self._visible_readings())
-        temperatures = sum(item.category == "TEMPERATURE" for item in readings)
-        fans = sum(item.category == "FAN" for item in readings)
-        alerts = sum(item.is_alert for item in readings)
-        summary_text = (
-            f"共 {len(readings)} 条  ·  温度 {temperatures}  ·  "
-            f"风扇 {fans}  ·  告警 {alerts}"
-        )
-        self.summary_label.configure(
-            text=summary_text,
-            text_color=COLORS["red"] if alerts else COLORS["ok"],
-        )
+
+        summary_text, tone = presenters.sensor_summary(readings)
+        self.summary_label.configure(text=summary_text, text_color=theme.tone_color(tone))
         self.updated_label.configure(
-            text=f"更新于 {datetime.now().strftime('%H:%M:%S')}  ·  {result.elapsed_seconds:.2f} s"
+            text=presenters.scan_timing(
+                datetime.now().strftime("%H:%M:%S"), result.elapsed_seconds
+            )
         )
-        self.owner._append_log(
-            "SENSOR",
-            f"已读取 {len(readings)} 条记录；温度 {temperatures}，风扇 {fans}，告警 {alerts}。",
-        )
+        self.owner._append_log("SENSOR", presenters.sensor_log_line(readings))
 
     def _visible_readings(self) -> list[SensorReading]:
-        query = self.search_var.get().strip().casefold()
-        alerts_only = self.alerts_only.get()
-        matches: list[SensorReading] = []
-        for reading in self._readings:
-            if alerts_only and not reading.is_alert:
-                continue
-            if query:
-                haystack = " ".join(
-                    (reading.name, reading.category, reading.reading, reading.status)
-                ).casefold()
-                if query not in haystack:
-                    continue
-            matches.append(reading)
-        return matches
+        return presenters.filter_readings(
+            self._readings,
+            self.search_var.get(),
+            alerts_only=bool(self.alerts_only.get()),
+        )
 
     def _apply_filters(self) -> None:
         if not self._alive():
@@ -590,89 +522,77 @@ class SensorDialog(ctk.CTkToplevel):
             self._render_empty("iDRAC 没有返回可显示的传感器记录。")
             return
 
-        ordered = sorted(
-            enumerate(readings),
-            key=lambda item: (
-                self.CATEGORY_ORDER.get(item[1].category, 99),
-                item[0],
-            ),
-        )
-        current_category: str | None = None
-        for row_index, (_source_index, reading) in enumerate(ordered):
-            if reading.category != current_category:
-                current_category = reading.category
-                count = sum(item.category == current_category for _, item in ordered)
-                ctk.CTkLabel(
-                    self.sensor_list,
-                    text=f"{CATEGORY_LABELS.get(current_category, current_category)}  ({count})",
-                    anchor="w",
-                    text_color=COLORS["text"],
-                    font=("Microsoft YaHei UI", 10, "bold"),
-                ).pack(
-                    fill="x",
-                    padx=8,
-                    pady=(14 if row_index else 6, 4),
-                    anchor="w",
-                )
-            row = ctk.CTkFrame(
-                self.sensor_list,
-                corner_radius=8,
-                fg_color=COLORS["surface_2"] if row_index % 2 == 0 else COLORS["surface"],
-            )
-            row.pack(fill="x", padx=3, pady=2)
-            row.grid_columnconfigure(0, weight=3)
-            row.grid_columnconfigure(1, weight=2)
-
-            name_box = ctk.CTkFrame(row, fg_color="transparent")
-            name_box.grid(row=0, column=0, padx=12, pady=8, sticky="ew")
+        row_index = -1
+        for label, group in presenters.group_by_category(readings):
             ctk.CTkLabel(
-                name_box,
-                text=reading.name,
+                self.sensor_list,
+                text=f"{label}  ({len(group)})",
                 anchor="w",
-                justify="left",
                 text_color=COLORS["text"],
                 font=("Microsoft YaHei UI", 10, "bold"),
-            ).pack(fill="x", anchor="w")
-            metadata = [reading.category]
-            if reading.sensor_id:
-                metadata.append(f"ID {reading.sensor_id}")
-            if reading.entity:
-                metadata.append(f"ENTITY {reading.entity}")
-            ctk.CTkLabel(
-                name_box,
-                text="  ·  ".join(metadata),
+            ).pack(
+                fill="x",
+                padx=8,
+                pady=(14 if row_index >= 0 else 6, 4),
                 anchor="w",
-                text_color=COLORS["muted"],
-                font=("Cascadia Mono", 8),
-            ).pack(fill="x", anchor="w", pady=(2, 0))
+            )
+            for reading in group:
+                row_index += 1
+                self._render_row(reading, row_index)
 
-            ctk.CTkLabel(
-                row,
-                text=reading.reading or "—",
-                anchor="w",
-                justify="left",
-                text_color=COLORS["reading"],
-                font=("Cascadia Mono", 9, "bold"),
-            ).grid(row=0, column=1, padx=10, pady=8, sticky="ew")
+    def _render_row(self, reading: SensorReading, row_index: int) -> None:
+        row = ctk.CTkFrame(
+            self.sensor_list,
+            corner_radius=8,
+            fg_color=COLORS["surface_2"] if row_index % 2 == 0 else COLORS["surface"],
+        )
+        row.pack(fill="x", padx=3, pady=2)
+        row.grid_columnconfigure(0, weight=3)
+        row.grid_columnconfigure(1, weight=2)
 
-            if not reading.parsed:
-                status_color = COLORS["muted"]
-            elif reading.is_alert:
-                status_color = COLORS["red"]
-            elif reading.status.strip().casefold() == "ok":
-                status_color = COLORS["ok"]
-            else:
-                status_color = COLORS["muted"]
-            ctk.CTkLabel(
-                row,
-                text=reading.status.upper() or "N/A",
-                width=72,
-                height=28,
-                corner_radius=7,
-                fg_color=COLORS["background"],
-                text_color=status_color,
-                font=("Cascadia Mono", 9, "bold"),
-            ).grid(row=0, column=2, padx=(6, 12), pady=8, sticky="e")
+        name_box = ctk.CTkFrame(row, fg_color="transparent")
+        name_box.grid(row=0, column=0, padx=12, pady=8, sticky="ew")
+        ctk.CTkLabel(
+            name_box,
+            text=reading.name,
+            anchor="w",
+            justify="left",
+            text_color=COLORS["text"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).pack(fill="x", anchor="w")
+        metadata = [reading.category]
+        if reading.sensor_id:
+            metadata.append(f"ID {reading.sensor_id}")
+        if reading.entity:
+            metadata.append(f"ENTITY {reading.entity}")
+        ctk.CTkLabel(
+            name_box,
+            text="  ·  ".join(metadata),
+            anchor="w",
+            text_color=COLORS["muted"],
+            font=("Cascadia Mono", 8),
+        ).pack(fill="x", anchor="w", pady=(2, 0))
+
+        ctk.CTkLabel(
+            row,
+            text=reading.reading or "—",
+            anchor="w",
+            justify="left",
+            text_color=COLORS["reading"],
+            font=("Cascadia Mono", 9, "bold"),
+        ).grid(row=0, column=1, padx=10, pady=8, sticky="ew")
+
+        status_color = theme.tone_color(presenters.reading_tone(reading))
+        ctk.CTkLabel(
+            row,
+            text=reading.status.upper() or "N/A",
+            width=72,
+            height=28,
+            corner_radius=7,
+            fg_color=COLORS["background"],
+            text_color=status_color,
+            font=("Cascadia Mono", 9, "bold"),
+        ).grid(row=0, column=2, padx=(6, 12), pady=8, sticky="e")
 
     def _render_empty(self, message: str) -> None:
         for child in self.sensor_list.winfo_children():
@@ -694,7 +614,14 @@ class SensorDialog(ctk.CTkToplevel):
 
 
 class FanConsole(ctk.CTk):
-    def __init__(self, startup_message: str | None = None) -> None:
+    def __init__(
+        self,
+        startup_message: str | None = None,
+        *,
+        runner=None,
+        spawn=None,
+        post=None,
+    ) -> None:
         super().__init__(fg_color=COLORS["background"])
         self.title("R730xd 热控控制台")
         # The readings row costs about 150 px of height, and the connection card
@@ -703,20 +630,43 @@ class FanConsole(ctk.CTk):
         self.minsize(900, 700)
 
         defaults = IpmiSettings.from_environment()
-        self.manual_mode = False
-        self.busy = False
-        self.current_speed = 10
         self.action_buttons: list[ctk.CTkButton] = []
         self.speed_buttons: list[ctk.CTkButton] = []
         self.sensor_dialog: SensorDialog | None = None
         self.reading_cards: list[ReadingCard] = []
         self._poll_job: str | None = None
+        self._pending_dialog: SensorDialog | None = None
+        # Only re-sync the slider when the speed actually changed, so a state
+        # update mid-command cannot snap a slider the user is dragging.
+        self._shown_speed: int | None = None
 
         self.host_var = tk.StringVar(value=defaults.host)
         self.user_var = tk.StringVar(value=defaults.username)
         self.password_var = tk.StringVar(value=defaults.password)
         self.exe_var = tk.StringVar(value=str(defaults.executable))
         self.interlock_var = tk.BooleanVar(value=False)
+
+        # All state and command sequencing lives in the controller; this class
+        # only renders it and forwards clicks. `post` is how a worker thread
+        # gets back onto the Tk thread. Injectable so tests can drive the whole
+        # path synchronously - the same reason create_app takes its runner.
+        # The controller needs self._settings and this window needs the
+        # controller, so the pieces are injected rather than the whole object.
+        overrides = {
+            name: value
+            for name, value in (("runner", runner), ("spawn", spawn))
+            if value is not None
+        }
+        self.controller = FanController(
+            self._settings,
+            post=post or (lambda fn: self.after(0, fn)),
+            listener=self,
+            **overrides,
+        )
+        # Bound after the controller exists. A trace rather than only the
+        # switch's command, so a programmatic set cannot leave the two out of
+        # step - which is exactly what the screenshot diff caught.
+        self.interlock_var.trace_add("write", self._interlock_changed)
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -727,6 +677,57 @@ class FanConsole(ctk.CTk):
         self._append_log("SYSTEM", startup_message or "控制台就绪。先测试连接，再解除安全联锁。")
         self._update_controls()
         self._schedule_poll(first=True)
+
+    # ------------------------------------------------------------------
+    # Controller state, exposed read-only for the view, tests and preview.
+
+    @property
+    def busy(self) -> bool:
+        return self.controller.busy
+
+    @busy.setter
+    def busy(self, value: bool) -> None:
+        self.controller.busy = value
+
+    @property
+    def manual_mode(self) -> bool:
+        return self.controller.mode == presenters.MODE_MANUAL
+
+    @property
+    def current_speed(self) -> int:
+        return self.controller.current_speed
+
+    # ------------------------------------------------------------------
+    # ConsoleListener: the controller pushes, the view renders.
+
+    def on_log(self, level: str, message: str) -> None:
+        self._append_log(level, message)
+
+    def on_readings(self, readings: list[SensorReading], _result: CommandResult) -> None:
+        self._render_reading_cards(readings)
+
+    def on_state(self) -> None:
+        """Single place where controller state becomes widget state."""
+        controller = self.controller
+        if self.interlock_var.get() != controller.interlock_released:
+            self.interlock_var.set(controller.interlock_released)
+
+        text, tone = presenters.mode_badge(controller.mode)
+        badge_fill, badge_text = theme.tone_badge(tone)
+        self.mode_badge.configure(text=text, fg_color=badge_fill, text_color=badge_text)
+
+        if controller.current_speed != self._shown_speed:
+            self._shown_speed = controller.current_speed
+            self.custom_value.set(controller.current_speed)
+            self.slider_value.configure(
+                text=presenters.custom_speed_label(controller.current_speed)
+            )
+            self.gauge.set_value(controller.current_speed)
+
+        if self._pending_dialog is not None and not controller.busy:
+            self._pending_dialog = None
+
+        self._update_controls()
 
     def _build_header(self) -> None:
         header = ctk.CTkFrame(self, height=92, corner_radius=0, fg_color=COLORS["surface"])
@@ -826,55 +827,28 @@ class FanConsole(ctk.CTk):
         self.readings_meta.grid(row=1, column=0, columnspan=4, pady=(7, 0), sticky="w")
 
     def apply_sensor_snapshot(self, result: CommandResult) -> None:
-        """Feed the readings row from any successful `sdr elist all`.
+        """Feed the readings row from a raw `sdr elist all` result."""
+        self._render_reading_cards(parse_sensor_output(result.stdout))
 
-        Both the background poll and the full-scan window land here, so one
-        BMC round trip updates everything that is on screen.
-        """
-        readings = parse_sensor_output(result.stdout)
+    def _render_reading_cards(self, readings: list[SensorReading]) -> None:
         cards = summarize_key_readings(readings)
         for card, reading in zip(self.reading_cards, cards, strict=True):
             card.update_reading(reading)
         self.readings_meta.configure(
-            text=(
-                f"更新于 {datetime.now().strftime('%H:%M:%S')}"
-                f" · 共 {len(readings)} 条记录"
-                f" · 每 {READINGS_POLL_SECONDS} 秒自动刷新"
-            )
-        )
-
-    def _configured(self) -> bool:
-        return all(
-            (
-                self.host_var.get().strip(),
-                self.user_var.get().strip(),
-                self.password_var.get(),
-                self.exe_var.get().strip(),
+            text=presenters.readings_meta(
+                len(readings), datetime.now().strftime("%H:%M:%S"), POLL_SECONDS
             )
         )
 
     def _schedule_poll(self, *, first: bool = False) -> None:
         if self._poll_job is not None:
             self.after_cancel(self._poll_job)
-        delay = 3000 if first else READINGS_POLL_SECONDS * 1000
+        delay = 3000 if first else POLL_SECONDS * 1000
         self._poll_job = self.after(delay, self._poll_readings)
 
     def _poll_readings(self) -> None:
-        """Quiet background refresh of the readings row.
-
-        Never queues behind a user action and never writes to the event log on
-        success: the log is for things the operator did, not for housekeeping.
-        Failures are still logged, otherwise a dead link would look like
-        stale-but-fine data.
-        """
         self._poll_job = None
-        if self._configured() and not self.busy:
-            self._submit(
-                sensor_snapshot_request(),
-                success=self.apply_sensor_snapshot,
-                log_stdout=False,
-                quiet=True,
-            )
+        self.controller.poll_sensors()
         self._schedule_poll()
 
     def _section_label(self, master: ctk.CTkBaseClass, text: str) -> ctk.CTkLabel:
@@ -907,7 +881,7 @@ class FanConsole(ctk.CTk):
             section,
             text="解除安全联锁",
             variable=self.interlock_var,
-            command=self._update_controls,
+            command=self._interlock_changed,
             progress_color=COLORS["amber"],
             button_color=COLORS["reading"],
             text_color=COLORS["text"],
@@ -1198,193 +1172,73 @@ class FanConsole(ctk.CTk):
     def _request_sensor_snapshot(self, dialog: SensorDialog) -> bool:
         if not dialog._alive():
             return False
-        def show(result: CommandResult) -> None:
-            self.apply_sensor_snapshot(result)
-            dialog.show_result(result)
-
-        return self._submit(
-            sensor_snapshot_request(),
-            success=show,
+        self._pending_dialog = dialog
+        return self.controller.refresh_sensors(
+            on_result=dialog.show_result,
             finished=dialog.finish_loading,
-            log_stdout=False,
         )
 
     def _refresh_connection_summary(self) -> None:
-        configured = all(
-            (
-                self.host_var.get().strip(),
-                self.user_var.get().strip(),
-                self.password_var.get(),
-                self.exe_var.get().strip(),
-            )
+        settings = self._settings()
+        configured = bool(
+            settings.host
+            and settings.username
+            and settings.password
+            and str(settings.executable)
         )
-        status = "就绪" if configured else "需要配置"
-        color = COLORS["ok"] if configured else COLORS["amber"]
+        status, tone = presenters.connection_status(configured)
+        chip, _tone = presenters.connection_chip(configured)
+        color = theme.tone_color(tone)
         self.connection_status_label.configure(text=status, text_color=color)
-        self.server_chip.configure(text=f"●  iDRAC  {status}", text_color=color)
+        self.server_chip.configure(text=chip, text_color=color)
 
     def _slider_changed(self, value: float) -> None:
         percent = round(value)
-        self.slider_value.configure(text=f"自定义 {percent}%")
+        self.slider_value.configure(text=presenters.custom_speed_label(percent))
         self.gauge.set_value(percent)
 
     def _test_connection(self) -> None:
-        self._submit(connection_test_request(), success=self._connection_ok)
+        self.controller.test_connection(on_success=self._connection_ok)
 
     def _connection_ok(self, _result: CommandResult) -> None:
-        self.server_chip.configure(
-            text="●  iDRAC  在线",
-            text_color=COLORS["ok"],
-        )
+        chip, tone = presenters.connection_chip(True, online=True)
+        self.server_chip.configure(text=chip, text_color=theme.tone_color(tone))
 
     def _enable_manual(self) -> None:
-        if not self.interlock_var.get():
-            self._append_log("BLOCK", "请先解除安全联锁，再关闭自动温控。")
-            return
-        self._submit(manual_mode_request(), success=self._manual_ok)
-
-    def _manual_ok(self, _result: CommandResult) -> None:
-        self.manual_mode = True
-        self.mode_badge.configure(
-            text="手动接管",
-            fg_color="#2A1618",
-            text_color="#E5484D",
-        )
-        self._update_controls()
+        self.controller.enable_manual()
 
     def _restore_auto(self) -> None:
-        self._submit(auto_mode_request(), success=self._auto_ok)
-
-    def _auto_ok(self, _result: CommandResult) -> None:
-        self.manual_mode = False
-        self.interlock_var.set(False)
-        self.mode_badge.configure(
-            text="自动温控",
-            fg_color="#1A1A19",
-            text_color="#9A9A95",
-        )
-        self._update_controls()
+        self.controller.restore_auto()
 
     def _set_speed(self, percent: int) -> None:
-        if not self.manual_mode:
-            self._append_log("BLOCK", "必须先成功启用手动控制。")
-            return
-        if not self.interlock_var.get():
-            self._append_log("BLOCK", "安全联锁已锁定，未发送调速指令。")
-            return
-        self._submit(speed_request(percent), success=lambda result: self._speed_ok(result, percent))
+        self.controller.set_speed(percent)
 
-    def _speed_ok(self, _result: CommandResult, percent: int) -> None:
-        self.current_speed = percent
-        self.custom_value.set(percent)
-        self.slider_value.configure(text=f"自定义 {percent}%")
-        self.gauge.set_value(percent)
-        self.output_status.configure(text=f"已接管 · {percent}%", text_color=COLORS["reading"])
+    def _interlock_changed(self, *_args) -> None:
+        """Keep the switch and the controller from ever disagreeing.
 
-    def _submit(
-        self,
-        request,
-        success=None,
-        *,
-        finished=None,
-        log_stdout: bool = True,
-        quiet: bool = False,
-    ) -> bool:
-        if self.busy:
-            if not quiet:
-                self._append_log("BUSY", "已有命令正在执行，请稍候。")
-            return False
-
-        self.busy = True
-        self._update_controls()
-        if not quiet:
-            self._append_log("SEND", f"{request.label}  /  {request.safe_to_log}")
-        settings = self._settings()
-
-        def worker() -> None:
-            try:
-                result = execute(settings, request)
-            except subprocess.TimeoutExpired:
-                self.after(
-                    0,
-                    lambda: self._command_failed(
-                        "连接超时，iDRAC 未在规定时间内响应。", finished
-                    ),
-                )
-            except Exception as exc:  # UI boundary: render validation/runtime errors for the user.
-                self.after(
-                    0,
-                    lambda message=str(exc): self._command_failed(message, finished),
-                )
-            else:
-                self.after(
-                    0,
-                    lambda: self._command_done(result, success, finished, log_stdout, quiet),
-                )
-
-        threading.Thread(target=worker, name="ipmi-command", daemon=True).start()
-        return True
-
-    def _command_done(
-        self,
-        result: CommandResult,
-        success,
-        finished,
-        log_stdout: bool,
-        quiet: bool = False,
-    ) -> None:
-        self.busy = False
-        try:
-            if result.ok:
-                if quiet:
-                    if success:
-                        success(result)
-                    return
-                if log_stdout:
-                    detail = (
-                        result.stdout.replace("\n", " · ")
-                        if result.stdout
-                        else "iDRAC 已接受命令"
-                    )
-                else:
-                    detail = "结果已显示在传感器窗口"
-                self._append_log(
-                    "OK", f"{result.request.label} / {detail} / {result.elapsed_seconds:.2f}s"
-                )
-                if success:
-                    success(result)
-            else:
-                detail = result.stderr or result.stdout or f"exit code {result.returncode}"
-                self._append_log("ERROR", detail.replace("\n", " · "))
-        finally:
-            if finished:
-                finished()
-            self._update_controls()
-
-    def _command_failed(self, message: str, finished=None) -> None:
-        self.busy = False
-        try:
-            self._append_log("ERROR", message)
-        finally:
-            if finished:
-                finished()
-            self._update_controls()
+        The equality guard is what makes the trace safe: on_state() writes the
+        var from the controller, which fires this back, which would loop.
+        """
+        released = bool(self.interlock_var.get())
+        if released != self.controller.interlock_released:
+            self.controller.set_interlock(released)
 
     def _update_controls(self) -> None:
-        unlocked = self.interlock_var.get()
-        base_state = "disabled" if self.busy else "normal"
+        controller = self.controller
+        unlocked = controller.interlock_released
+        busy = controller.busy
+        base_state = "disabled" if busy else "normal"
         for button in self.action_buttons:
             button.configure(state=base_state)
 
-        self.manual_button.configure(state="normal" if unlocked and not self.busy else "disabled")
-        speed_state = "normal" if unlocked and self.manual_mode and not self.busy else "disabled"
+        self.manual_button.configure(state="normal" if unlocked and not busy else "disabled")
+        manual = controller.mode == presenters.MODE_MANUAL
+        speed_state = "normal" if unlocked and manual and not busy else "disabled"
         for button in self.speed_buttons:
             button.configure(state=speed_state)
         self.speed_slider.configure(state=speed_state)
-        self.output_status.configure(
-            text=(f"已接管 · {self.current_speed}%" if self.manual_mode else "未接管"),
-            text_color=(COLORS["reading"] if self.manual_mode else COLORS["amber"]),
-        )
+        text, tone = presenters.output_status(controller.mode, controller.current_speed)
+        self.output_status.configure(text=text, text_color=theme.tone_color(tone))
 
     def _append_log(self, level: str, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")

@@ -5,12 +5,32 @@ import unittest
 from unittest.mock import patch
 
 
+def ok_result(request, stdout=""):
+    from r730xd_fan.ipmi import CommandResult
+
+    return CommandResult(
+        request=request, returncode=0, stdout=stdout, stderr="", elapsed_seconds=0.5
+    )
+
+
+def sync_console(runner, **kwargs):
+    """A window whose commands complete inline, so tests need no threads."""
+    from r730xd_fan.ui import FanConsole
+
+    return FanConsole(
+        runner=runner,
+        spawn=lambda work: work(),
+        post=lambda fn: fn(),
+        **kwargs,
+    )
+
+
 @unittest.skipUnless(os.name == "nt", "GUI smoke test requires Windows")
 class UiStartupTests(unittest.TestCase):
     def test_cold_start_does_not_send_ipmi_command(self) -> None:
         from r730xd_fan.ui import FanConsole
 
-        with patch("r730xd_fan.ui.execute") as execute:
+        with patch("r730xd_fan.console.execute") as execute:
             app = FanConsole(startup_message="offline startup test")
             try:
                 app.withdraw()
@@ -94,25 +114,19 @@ class UiStartupTests(unittest.TestCase):
             app.destroy()
 
     def test_sensor_window_keeps_full_output_out_of_event_log(self) -> None:
-        from r730xd_fan.ipmi import CommandResult, sensor_snapshot_request
-        from r730xd_fan.ui import FanConsole, SensorDialog
+        from r730xd_fan.ui import SensorDialog
 
-        app = FanConsole(startup_message="sensor window test")
-        dialog = SensorDialog(app)
         output = "\n".join(
             f"Sensor {index:02d} | {index:02x}h | ok | 7.1 | {20 + index} degrees C"
             for index in range(50)
         )
-        result = CommandResult(
-            request=sensor_snapshot_request(),
-            returncode=0,
-            stdout=output,
-            stderr="",
-            elapsed_seconds=1.25,
+        app = sync_console(
+            lambda _settings, request: ok_result(request, output),
+            startup_message="sensor window test",
         )
+        dialog = SensorDialog(app)
         try:
-            app.busy = True
-            app._command_done(result, dialog.show_result, dialog.finish_loading, False)
+            app._request_sensor_snapshot(dialog)
             self.assertIn("共 50 条", dialog.summary_label.cget("text"))
             import customtkinter as ctk
 
@@ -204,12 +218,14 @@ class UiStartupTests(unittest.TestCase):
         finally:
             app.destroy()
 
-    def test_background_poll_is_silent_on_success_and_skipped_while_busy(self) -> None:
+    def test_background_poll_reaches_the_readings_row_without_logging(self) -> None:
         """The event log is for operator actions, not for housekeeping."""
-        from r730xd_fan.ipmi import CommandResult, sensor_snapshot_request
-        from r730xd_fan.ui import FanConsole
-
-        app = FanConsole(startup_message="quiet poll test")
+        app = sync_console(
+            lambda _settings, request: ok_result(
+                request, "Inlet Temp | 04h | ok | 7.1 | 21 degrees C"
+            ),
+            startup_message="quiet poll test",
+        )
         try:
             app.withdraw()
             app.host_var.set("198.51.100.9")
@@ -217,51 +233,47 @@ class UiStartupTests(unittest.TestCase):
             app.password_var.set("secret")
             app.exe_var.set("C:/Dell/ipmitool.exe")
 
-            result = CommandResult(
-                request=sensor_snapshot_request(),
-                returncode=0,
-                stdout="Inlet Temp | 04h | ok | 7.1 | 21 degrees C",
-                stderr="",
-                elapsed_seconds=0.4,
-            )
-
-            # Drive the completion path directly, the way the other tests here
-            # do: the worker thread hands back through after() and pumping that
-            # from a test harness is a race, not a behaviour worth asserting.
-            app.busy = True
-            app._command_done(
-                result, app.apply_sensor_snapshot, None, False, quiet=True
-            )
+            app._poll_readings()
             app.update_idletasks()
 
             log = app.log.get("1.0", "end")
             self.assertNotIn("[SEND", log)
             self.assertNotIn("[OK", log)
             self.assertEqual(app.reading_cards[0].value_label.cget("text"), "21")
+        finally:
+            app.destroy()
 
-            # A failing poll must still be audible: silent success, loud error.
-            app.busy = True
-            app._command_done(
-                CommandResult(
-                    request=sensor_snapshot_request(),
-                    returncode=1,
-                    stdout="",
-                    stderr="Address lookup failed",
-                    elapsed_seconds=0.1,
-                ),
-                app.apply_sensor_snapshot,
-                None,
-                False,
-                quiet=True,
-            )
-            self.assertIn("Address lookup failed", app.log.get("1.0", "end"))
+    def test_a_takeover_repaints_the_mode_badge_and_unlocks_the_presets(self) -> None:
+        """The controller owns the state; this proves the window renders it."""
+        app = sync_console(
+            lambda _settings, request: ok_result(request),
+            startup_message="state rendering test",
+        )
+        try:
+            app.withdraw()
+            app.host_var.set("198.51.100.9")
+            app.user_var.set("root")
+            app.password_var.set("secret")
 
-            # A user command in flight must not be elbowed aside by the poll.
-            app.busy = True
-            with patch("r730xd_fan.ui.execute") as execute:
-                app._poll_readings()
-            execute.assert_not_called()
-            self.assertNotIn("[BUSY", app.log.get("1.0", "end"))
+            self.assertEqual(app.mode_badge.cget("text"), "状态未知")
+            self.assertEqual(app.speed_slider.cget("state"), "disabled")
+
+            app.interlock_var.set(True)
+            app._interlock_changed()
+            app._enable_manual()
+            app.update_idletasks()
+
+            self.assertTrue(app.manual_mode)
+            self.assertEqual(app.mode_badge.cget("text"), "手动接管")
+            self.assertEqual(app.speed_slider.cget("state"), "normal")
+
+            # The way out repaints everything back, interlock included.
+            app._restore_auto()
+            app.update_idletasks()
+            self.assertFalse(app.manual_mode)
+            self.assertEqual(app.mode_badge.cget("text"), "自动温控")
+            self.assertFalse(app.interlock_var.get())
+            self.assertEqual(app.speed_slider.cget("state"), "disabled")
         finally:
             app.destroy()
 

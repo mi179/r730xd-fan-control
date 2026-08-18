@@ -111,8 +111,8 @@ class FanController:
 
     # ------------------------------------------------------------- commands
 
-    def test_connection(self) -> bool:
-        return self._submit(connection_test_request())
+    def test_connection(self, on_success: Any = None) -> bool:
+        return self._submit(connection_test_request(), on_success=on_success)
 
     def enable_manual(self) -> bool:
         if not self.interlock_released:
@@ -136,7 +136,9 @@ class FanController:
             on_success=lambda result: self._speed_ok(percent),
         )
 
-    def refresh_sensors(self, *, quiet: bool = False, on_result: Any = None) -> bool:
+    def refresh_sensors(
+        self, *, quiet: bool = False, on_result: Any = None, finished: Any = None
+    ) -> bool:
         def handle(result: CommandResult) -> None:
             self.readings = parse_sensor_output(result.stdout)
             listener = self._listener
@@ -148,6 +150,7 @@ class FanController:
         return self._submit(
             sensor_snapshot_request(),
             on_success=handle,
+            finished=finished,
             quiet=quiet,
             log_stdout=False,
         )
@@ -193,6 +196,7 @@ class FanController:
         request: IpmiRequest,
         *,
         on_success: Callable[[CommandResult], None] | None = None,
+        finished: Callable[[], None] | None = None,
         quiet: bool = False,
         log_stdout: bool = True,
     ) -> bool:
@@ -215,13 +219,19 @@ class FanController:
                 result = self._runner(settings, request)
             except subprocess.TimeoutExpired:
                 self._post(
-                    lambda: self._failed("连接超时，iDRAC 未在规定时间内响应。")
+                    lambda: self._failed(
+                        "连接超时，iDRAC 未在规定时间内响应。", finished
+                    )
                 )
             except Exception as exc:  # boundary: surface it, never crash the UI
                 message = safe_exception(exc, password)
-                self._post(lambda: self._failed(message))
+                self._post(lambda: self._failed(message, finished))
             else:
-                self._post(lambda: self._finish(result, on_success, quiet, log_stdout))
+                self._post(
+                    lambda: self._finish(
+                        result, on_success, finished, quiet, log_stdout
+                    )
+                )
 
         self._spawn(work)
         return True
@@ -230,6 +240,7 @@ class FanController:
         self,
         result: CommandResult,
         on_success: Callable[[CommandResult], None] | None,
+        finished: Callable[[], None] | None,
         quiet: bool,
         log_stdout: bool,
     ) -> None:
@@ -258,11 +269,17 @@ class FanController:
                 detail = result.stderr or result.stdout or f"exit code {result.returncode}"
                 self._log("ERROR", detail.replace("\n", " · "))
         finally:
+            if finished:
+                finished()
             self._changed()
 
-    def _failed(self, message: str) -> None:
+    def _failed(
+        self, message: str, finished: Callable[[], None] | None = None
+    ) -> None:
         self.busy = False
         try:
             self._log("ERROR", message)
         finally:
+            if finished:
+                finished()
             self._changed()
