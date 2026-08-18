@@ -33,6 +33,22 @@ jobs:
       - name: Desktop unit tests
         run: python -m unittest discover -s tests -v
 
+  # The GUI tests can only run on Windows, so before the console/presenters
+  # split every desktop invariant was checked on exactly one platform. These
+  # are the ones that need no display: test_ui_startup.py skips itself here,
+  # the controller and presenter tests all execute.
+  desktop-core-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package
+        run: pip install -e .
+      - name: Desktop unit tests without a display
+        run: python -m unittest discover -s tests -v
+
   webapp-tests:
     runs-on: ubuntu-latest
     steps:
