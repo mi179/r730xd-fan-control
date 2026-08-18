@@ -28,9 +28,15 @@ from flask import Flask, jsonify, redirect, render_template, request, session
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 from werkzeug.security import check_password_hash
 
-MANUAL_MODE_RAW = ("raw", "0x30", "0x30", "0x01", "0x00")
-AUTO_MODE_RAW = ("raw", "0x30", "0x30", "0x01", "0x01")
-SAFE_OUTPUT_LIMIT = 512 * 1024
+from r730xd_core import protocol
+from r730xd_core.redaction import redact_and_limit, safe_exception
+from r730xd_core.sdr import extract_reading_number, parse_sdr_records, sensor_category
+
+# Protocol bytes, SDR parsing and redaction are shared with the desktop line
+# (D-027). Two independent copies of the commands that change how a server
+# cools itself is not a risk worth carrying.
+MANUAL_MODE_RAW = protocol.MANUAL_MODE_ARGS
+AUTO_MODE_RAW = protocol.AUTO_MODE_ARGS
 HOST_PATTERN = re.compile(
     r"(?=.{1,253}\Z)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*"
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z"
@@ -1117,16 +1123,15 @@ class Backend:
                 self.state.deep_scan = completed
 
 
-def _redact_and_limit(value: str, password: str) -> str:
-    if password:
-        value = value.replace(password, "[REDACTED]")
-    return value[:SAFE_OUTPUT_LIMIT].strip()
+_redact_and_limit = redact_and_limit
 
 
 def _safe_exception(exc: Exception, password: str) -> str:
+    """ApiError messages are already written for a user; everything else is
+    untrusted text that has to be scrubbed first."""
     if isinstance(exc, ApiError):
         return exc.message
-    return _redact_and_limit(str(exc), password)[:300] or "未知错误"
+    return safe_exception(exc, password)
 
 
 def _require_connection(config: ConnectionConfig) -> None:
@@ -1407,52 +1412,27 @@ def _parse_redfish_telemetry(
     }
 
 
-def _sensor_category(name: str, reading: str) -> str:
-    searchable = f"{name} {reading}".casefold()
-    if "degrees c" in searchable or "temp" in searchable:
-        return "temperature"
-    if "rpm" in searchable or "fan" in searchable:
-        return "fan"
-    if "watt" in searchable or "power" in searchable:
-        return "power"
-    if "volt" in searchable:
-        return "voltage"
-    if "amp" in searchable or "current" in searchable:
-        return "current"
-    return "system"
+_sensor_category = sensor_category
 
 
 def _parse_sdr_records(output: str) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    for raw_line in output.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        fields = [part.strip() for part in line.split("|")]
-        parsed = len(fields) >= 5
-        if parsed:
-            name, sensor_id, status, entity = fields[:4]
-            reading = " | ".join(fields[4:])
-        else:
-            name, sensor_id, status, entity, reading = line, "", "raw", "", ""
-        records.append(
-            {
-                "name": name or "Unnamed sensor",
-                "sensor_id": sensor_id,
-                "status": status,
-                "entity": entity,
-                "reading": reading,
-                "category": _sensor_category(name, reading),
-                "parsed": parsed,
-                "raw": line,
-            }
-        )
-    return records
+    """Shared parser, rendered as the dicts this line's JSON API returns."""
+    return [
+        {
+            "name": record.name,
+            "sensor_id": record.sensor_id,
+            "status": record.status,
+            "entity": record.entity,
+            "reading": record.reading,
+            "category": record.category,
+            "parsed": record.parsed,
+            "raw": record.raw,
+        }
+        for record in parse_sdr_records(output)
+    ]
 
 
-def _extract_reading_number(reading: str) -> float | None:
-    match = re.search(r"[-+]?\d+(?:\.\d+)?", reading)
-    return round(float(match.group(0)), 2) if match else None
+_extract_reading_number = extract_reading_number
 
 
 def _record_to_summary(record: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -2108,7 +2088,7 @@ def create_app(
                 if state.mode != "manual":
                     raise ApiError(409, "manual_mode_required", "必须先成功启用手动温控")
                 config = state.config
-            arguments = ("raw", "0x30", "0x30", "0x02", "0xff", f"0x{percent:02x}")
+            arguments = protocol.speed_args(percent)
             result = backend.ipmi.run(config, arguments, timeout=12)
             if not result.ok:
                 raise ApiError(502, "speed_change_failed", "设置风扇转速失败")

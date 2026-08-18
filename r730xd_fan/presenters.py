@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 
+from r730xd_core import sdr
+
 from .ipmi import SensorReading
 
 # The whole colour vocabulary of the product. "alert" and "warn" are the only
@@ -21,22 +23,23 @@ from .ipmi import SensorReading
 # amber means the operator needs to act. Everything else is monochrome.
 TONES = ("neutral", "muted", "ok", "warn", "alert")
 
+# Keys are the shared lower-case category values from r730xd_core.sdr.
 CATEGORY_LABELS = {
-    "TEMPERATURE": "温度",
-    "FAN": "风扇",
-    "POWER": "功耗",
-    "VOLTAGE": "电压",
-    "CURRENT": "电流",
-    "SYSTEM": "其他",
+    sdr.CATEGORY_TEMPERATURE: "温度",
+    sdr.CATEGORY_FAN: "风扇",
+    sdr.CATEGORY_POWER: "功耗",
+    sdr.CATEGORY_VOLTAGE: "电压",
+    sdr.CATEGORY_CURRENT: "电流",
+    sdr.CATEGORY_SYSTEM: "其他",
 }
 
 CATEGORY_ORDER = {
-    "TEMPERATURE": 0,
-    "FAN": 1,
-    "POWER": 2,
-    "VOLTAGE": 3,
-    "CURRENT": 4,
-    "SYSTEM": 5,
+    sdr.CATEGORY_TEMPERATURE: 0,
+    sdr.CATEGORY_FAN: 1,
+    sdr.CATEGORY_POWER: 2,
+    sdr.CATEGORY_VOLTAGE: 3,
+    sdr.CATEGORY_CURRENT: 4,
+    sdr.CATEGORY_SYSTEM: 5,
 }
 
 # The three states the fan mode can be in. "unknown" is not a failure: the tool
@@ -158,8 +161,8 @@ def group_by_category(
 
 
 def sensor_summary(readings: Sequence[SensorReading]) -> tuple[str, str]:
-    temperatures = sum(item.category == "TEMPERATURE" for item in readings)
-    fans = sum(item.category == "FAN" for item in readings)
+    temperatures = sum(item.category == sdr.CATEGORY_TEMPERATURE for item in readings)
+    fans = sum(item.category == sdr.CATEGORY_FAN for item in readings)
     alerts = sum(item.is_alert for item in readings)
     text = (
         f"共 {len(readings)} 条  ·  温度 {temperatures}  ·  "
@@ -169,8 +172,8 @@ def sensor_summary(readings: Sequence[SensorReading]) -> tuple[str, str]:
 
 
 def sensor_log_line(readings: Sequence[SensorReading]) -> str:
-    temperatures = sum(item.category == "TEMPERATURE" for item in readings)
-    fans = sum(item.category == "FAN" for item in readings)
+    temperatures = sum(item.category == sdr.CATEGORY_TEMPERATURE for item in readings)
+    fans = sum(item.category == sdr.CATEGORY_FAN for item in readings)
     alerts = sum(item.is_alert for item in readings)
     return f"已读取 {len(readings)} 条记录；温度 {temperatures}，风扇 {fans}，告警 {alerts}。"
 

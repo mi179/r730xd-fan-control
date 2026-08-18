@@ -1,22 +1,35 @@
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from r730xd_core import protocol, sdr
+from r730xd_core.redaction import redact_and_limit, safe_exception
+from r730xd_core.sdr import SdrRecord, parse_sdr_records
+
 from .config import IpmiSettings
 
-# Mirrors webapp/app.py: command output is redacted and length-capped at the
-# source, so nothing downstream - event log, sensor window, parsers - can ever
-# be handed the secret or an unbounded blob.
-SAFE_OUTPUT_LIMIT = 512 * 1024
-
-MANUAL_MODE_RAW = ("0x30", "0x30", "0x01", "0x00")
-AUTO_MODE_RAW = ("0x30", "0x30", "0x01", "0x01")
+__all__ = [
+    "CommandResult",
+    "IpmiRequest",
+    "KeyReading",
+    "SensorReading",
+    "auto_mode_request",
+    "build_command",
+    "connection_test_request",
+    "execute",
+    "manual_mode_request",
+    "parse_sensor_output",
+    "redact_and_limit",
+    "safe_exception",
+    "sensor_snapshot_request",
+    "speed_request",
+    "summarize_key_readings",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,35 +53,9 @@ class CommandResult:
         return self.returncode == 0
 
 
-@dataclass(frozen=True, slots=True)
-class SensorReading:
-    name: str
-    sensor_id: str
-    status: str
-    entity: str
-    reading: str
-    raw: str
-    parsed: bool = True
-
-    @property
-    def category(self) -> str:
-        searchable = f"{self.name} {self.reading}".casefold()
-        if "degrees c" in searchable or "temperature" in searchable or "temp" in searchable:
-            return "TEMPERATURE"
-        if "rpm" in searchable or "fan" in searchable:
-            return "FAN"
-        if "watt" in searchable or "power" in searchable:
-            return "POWER"
-        if "volt" in searchable:
-            return "VOLTAGE"
-        if "amp" in searchable or "current" in searchable:
-            return "CURRENT"
-        return "SYSTEM"
-
-    @property
-    def is_alert(self) -> bool:
-        normalized = self.status.strip().casefold()
-        return self.parsed and normalized not in {"", "ok", "ns", "na", "disabled"}
+# The shared record already carries name/status/category/is_alert; the desktop
+# keeps the old name so call sites read the same.
+SensorReading = SdrRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,10 +73,10 @@ class KeyReading:
     status: str  # "ok" | "alert" | "unknown"
 
 
-_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
-
-
 def _numeric(reading: str) -> str | None:
+    """Card text keeps the number as written, so 23 does not become 23.0."""
+    from r730xd_core.sdr import _NUMBER
+
     match = _NUMBER.search(reading)
     return match.group(0) if match else None
 
@@ -126,7 +113,11 @@ def summarize_key_readings(readings: list[SensorReading]) -> tuple[KeyReading, .
     chassis or a pulled CPU changes what is present. Unmatched slots stay
     ``--`` rather than borrowing an unrelated sensor.
     """
-    temperatures = [item for item in readings if item.parsed and item.category == "TEMPERATURE"]
+    temperatures = [
+        item
+        for item in readings
+        if item.parsed and item.category == sdr.CATEGORY_TEMPERATURE
+    ]
     inlet = _first_named(temperatures, "inlet")
     exhaust = _first_named(temperatures, "exhaust")
     taken = {id(item) for item in (inlet, exhaust) if item is not None}
@@ -138,7 +129,7 @@ def summarize_key_readings(readings: list[SensorReading]) -> tuple[KeyReading, .
             item
             for item in readings
             if item.parsed
-            and item.category == "POWER"
+            and item.category == sdr.CATEGORY_POWER
             and "watt" in item.reading.casefold()
         ),
         None,
@@ -152,30 +143,17 @@ def summarize_key_readings(readings: list[SensorReading]) -> tuple[KeyReading, .
     )
 
 
-def redact_and_limit(value: str, password: str) -> str:
-    if password:
-        value = value.replace(password, "[REDACTED]")
-    return value[:SAFE_OUTPUT_LIMIT].strip()
-
-
-def safe_exception(exc: Exception, password: str) -> str:
-    return redact_and_limit(str(exc), password)[:300] or "未知错误"
-
-
 def manual_mode_request() -> IpmiRequest:
-    return raw_request("关闭自动温控", MANUAL_MODE_RAW)
+    return _protocol_request("关闭自动温控", protocol.MANUAL_MODE_ARGS)
 
 
 def auto_mode_request() -> IpmiRequest:
-    return raw_request("恢复自动温控", AUTO_MODE_RAW)
+    return _protocol_request("恢复自动温控", protocol.AUTO_MODE_ARGS)
 
 
 def speed_request(percent: int) -> IpmiRequest:
-    if not 5 <= percent <= 100:
-        raise ValueError("风扇百分比必须在 5 到 100 之间")
-    return raw_request(
-        f"设置风扇为 {percent}%",
-        ("0x30", "0x30", "0x02", "0xff", f"0x{percent:02x}"),
+    return _protocol_request(
+        f"设置风扇为 {percent}%", protocol.speed_args(percent)
     )
 
 
@@ -192,43 +170,18 @@ def sensor_snapshot_request() -> IpmiRequest:
     )
 
 
-def raw_request(label: str, values: Sequence[str]) -> IpmiRequest:
-    arguments = ("raw", *tuple(values))
+def _protocol_request(label: str, arguments: Sequence[str]) -> IpmiRequest:
+    arguments = tuple(arguments)
     return IpmiRequest(label, arguments, " ".join(arguments))
+
+
+def raw_request(label: str, values: Sequence[str]) -> IpmiRequest:
+    return _protocol_request(label, ("raw", *tuple(values)))
 
 
 def parse_sensor_output(output: str) -> list[SensorReading]:
     """Parse ``sdr elist all`` output while preserving every non-empty row."""
-    readings: list[SensorReading] = []
-    for raw_line in output.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        fields = [field.strip() for field in line.split("|")]
-        if len(fields) >= 5:
-            readings.append(
-                SensorReading(
-                    name=fields[0] or "UNNAMED SENSOR",
-                    sensor_id=fields[1],
-                    status=fields[2],
-                    entity=fields[3],
-                    reading=" | ".join(fields[4:]),
-                    raw=line,
-                )
-            )
-        else:
-            readings.append(
-                SensorReading(
-                    name=line,
-                    sensor_id="",
-                    status="RAW",
-                    entity="",
-                    reading="UNPARSED RECORD",
-                    raw=line,
-                    parsed=False,
-                )
-            )
-    return readings
+    return parse_sdr_records(output)
 
 
 def build_command(settings: IpmiSettings, request: IpmiRequest) -> list[str]:

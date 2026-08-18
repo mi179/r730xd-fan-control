@@ -24,5 +24,8 @@
 | T-020 | 桌面版对齐 Web 外观 + 三温度一功耗读数卡，中文化，不做趋势图 | **Done 2026-08-19**（D-025, E-037；EXE 已重建） | D-025, E-037 |
 | T-021 | 简化部署：维护者路径与发布路径分离（`deploy_wrt.ps1`）、升级免提问、自动 verify、`/tmp` 用完即删 | **Done 2026-08-19**（D-026, E-038）——但只做了静态验收 | D-026, E-038 |
 | T-022 | 在真机 `192.168.5.2` 上跑一轮 `deploy_wrt.ps1` 验收：源码上传 → WRT 构建 → `--use-local-image` 安装 → 自动 verify → `/tmp` 已清空；再故意让 verify 失败一次，确认回滚真的触发 | Open；这是对生产路由器的写操作，需业主明确授权后执行 | D-026, E-038 |
+| T-023 | 抽出 `r730xd_core/`：协议常量、SDR 解析分类、输出脱敏三块两端共用；不合并 runner | **Done 2026-08-19**（D-027, E-039） | D-027, E-039 |
+| T-024 | 把 `webapp/tests/` 里的 4 个非测试脚本（`live_smoke` / `live_idrac_readonly` / `inspect_idrac_network` / `dev_preview`）挪到 `tools/live/`。现在拦着 `live_smoke.py` 不被 CI 对真机执行的只是一个 `-p "test_*.py"` 参数，一个文件名就能捅穿 | Open；顺带可关闭 T-006 | E-016 |
+| T-025 | 桌面 `ui.py` 拆成 `view/cards.py` + `dialogs.py` + `window.py` | Open；纯文件分割，随时可做，刻意排在 core 抽取之后以免文件搬两次家 | D-025 |
 
 关闭任务时把状态改为 Done + 日期，不删除行。

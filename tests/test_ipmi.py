@@ -69,8 +69,9 @@ Dell vendor record without separators
         readings = parse_sensor_output(output)
 
         self.assertEqual(len(readings), 4)
-        self.assertEqual(readings[0].category, "TEMPERATURE")
-        self.assertEqual(readings[1].category, "FAN")
+        # Lower case because the value travels in the Web JSON API (D-027).
+        self.assertEqual(readings[0].category, "temperature")
+        self.assertEqual(readings[1].category, "fan")
         self.assertTrue(readings[2].is_alert)
         self.assertFalse(readings[3].parsed)
         self.assertEqual(readings[3].raw, "Dell vendor record without separators")

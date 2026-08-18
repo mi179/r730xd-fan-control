@@ -19,6 +19,9 @@ WORKDIR /app
 COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Shared with the desktop line (D-027). Copied before app.py so a change to
+# the app does not invalidate this layer.
+COPY --chown=r730xd:r730xd r730xd_core ./r730xd_core
 COPY --chown=r730xd:r730xd app.py ./app.py
 COPY --chown=r730xd:r730xd templates ./templates
 COPY --chown=r730xd:r730xd static ./static

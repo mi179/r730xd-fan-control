@@ -85,6 +85,14 @@ try {
     foreach ($name in @("templates", "static")) {
         Copy-Item -LiteralPath (Join-Path $webappRoot $name) -Destination (Join-Path $stageRoot "build\$name") -Recurse
     }
+    # r730xd_core lives at the repo root, outside webapp/, but the image needs
+    # it (D-027). Without this the build fails on `import r730xd_core`.
+    Copy-Item -LiteralPath (Join-Path $repoRoot "r730xd_core") -Destination (Join-Path $stageRoot "build\r730xd_core") -Recurse
+
+    # Compiled bytecode is host-specific and would only be dead weight in the
+    # upload; .dockerignore drops it at build time anyway.
+    Get-ChildItem -LiteralPath $stageRoot -Recurse -Directory -Filter "__pycache__" |
+        Remove-Item -Recurse -Force
 
     # Run tar with the staging directory as the working directory and relative
     # paths only: GNU tar reads "D:\..." as a host:path remote spec, so an

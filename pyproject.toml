@@ -13,7 +13,10 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["r730xd_fan*"]
+# Two top-level packages: the desktop app and the code shared with the Web
+# line. Without r730xd_core here, `pip install -e .` silently omits it and
+# every import of it fails at runtime.
+include = ["r730xd_fan*", "r730xd_core*"]
 
 [tool.ruff]
 line-length = 100
