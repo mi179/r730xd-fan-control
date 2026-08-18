@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import time
 from collections.abc import Sequence
@@ -63,6 +64,87 @@ class SensorReading:
     def is_alert(self) -> bool:
         normalized = self.status.strip().casefold()
         return self.parsed and normalized not in {"", "ok", "ns", "na", "disabled"}
+
+
+@dataclass(frozen=True, slots=True)
+class KeyReading:
+    """One card in the readings row: three temperatures plus live power.
+
+    Mirrors the reading cards in webapp/templates/index.html so both front ends
+    show the same four numbers, minus the web-only trend chart.
+    """
+
+    label: str
+    value: str
+    unit: str
+    detail: str
+    status: str  # "ok" | "alert" | "unknown"
+
+
+_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _numeric(reading: str) -> str | None:
+    match = _NUMBER.search(reading)
+    return match.group(0) if match else None
+
+
+def _card(label: str, unit: str, reading: SensorReading | None) -> KeyReading:
+    if reading is None:
+        return KeyReading(label, "--", unit, "未找到该传感器", "unknown")
+    value = _numeric(reading.reading)
+    if value is None:
+        # The sensor exists but iDRAC gave no number (disabled slot, absent CPU).
+        return KeyReading(label, "--", unit, reading.name, "unknown")
+    return KeyReading(
+        label,
+        value,
+        unit,
+        reading.name,
+        "alert" if reading.is_alert else "ok",
+    )
+
+
+def _first_named(candidates: list[SensorReading], *needles: str) -> SensorReading | None:
+    for needle in needles:
+        for reading in candidates:
+            if needle in reading.name.casefold():
+                return reading
+    return None
+
+
+def summarize_key_readings(readings: list[SensorReading]) -> tuple[KeyReading, ...]:
+    """Pick the four headline values out of a full ``sdr elist all`` snapshot.
+
+    Slot assignment is by sensor name, not position: an R730xd reports
+    ``Inlet Temp``, ``Exhaust Temp`` and one ``Temp`` per CPU, but a different
+    chassis or a pulled CPU changes what is present. Unmatched slots stay
+    ``--`` rather than borrowing an unrelated sensor.
+    """
+    temperatures = [item for item in readings if item.parsed and item.category == "TEMPERATURE"]
+    inlet = _first_named(temperatures, "inlet")
+    exhaust = _first_named(temperatures, "exhaust")
+    taken = {id(item) for item in (inlet, exhaust) if item is not None}
+    remaining = [item for item in temperatures if id(item) not in taken]
+    cpu = _first_named(remaining, "cpu") or (remaining[0] if remaining else None)
+
+    power = next(
+        (
+            item
+            for item in readings
+            if item.parsed
+            and item.category == "POWER"
+            and "watt" in item.reading.casefold()
+        ),
+        None,
+    )
+
+    return (
+        _card("进风温度", "°C", inlet),
+        _card("排风温度", "°C", exhaust),
+        _card("CPU 温度", "°C", cpu),
+        _card("实时功耗", "W", power),
+    )
 
 
 def manual_mode_request() -> IpmiRequest:

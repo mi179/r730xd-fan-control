@@ -11,6 +11,7 @@ from r730xd_fan.ipmi import (
     parse_sensor_output,
     sensor_snapshot_request,
     speed_request,
+    summarize_key_readings,
 )
 
 
@@ -68,6 +69,54 @@ Dell vendor record without separators
         self.assertTrue(readings[2].is_alert)
         self.assertFalse(readings[3].parsed)
         self.assertEqual(readings[3].raw, "Dell vendor record without separators")
+
+
+class KeyReadingTests(unittest.TestCase):
+    SNAPSHOT = "\n".join(
+        (
+            "Inlet Temp | 04h | ok | 7.1 | 23 degrees C",
+            "Exhaust Temp | 01h | ok | 7.1 | 35 degrees C",
+            "Temp | 0Eh | ok | 3.1 | 48 degrees C",
+            "Temp | 0Fh | ns | 3.2 | Disabled",
+            "Pwr Consumption | 77h | ok | 7.1 | 133 Watts",
+        )
+    )
+
+    def test_slots_are_matched_by_sensor_name(self) -> None:
+        cards = summarize_key_readings(parse_sensor_output(self.SNAPSHOT))
+        self.assertEqual(
+            [(card.label, card.value, card.unit) for card in cards],
+            [
+                ("进风温度", "23", "°C"),
+                ("排风温度", "35", "°C"),
+                ("CPU 温度", "48", "°C"),
+                ("实时功耗", "133", "W"),
+            ],
+        )
+        self.assertTrue(all(card.status == "ok" for card in cards))
+
+    def test_absent_sensor_reports_unknown_rather_than_a_wrong_number(self) -> None:
+        cards = summarize_key_readings(
+            parse_sensor_output("Fan1A RPM | 30h | ok | 7.1 | 5880 RPM")
+        )
+        self.assertTrue(all(card.value == "--" for card in cards))
+        self.assertTrue(all(card.status == "unknown" for card in cards))
+
+    def test_bmc_flagged_sensor_is_marked_alert(self) -> None:
+        cards = summarize_key_readings(
+            parse_sensor_output("Inlet Temp | 04h | cr | 7.1 | 61 degrees C")
+        )
+        self.assertEqual(cards[0].value, "61")
+        self.assertEqual(cards[0].status, "alert")
+
+    def test_a_temperature_is_never_reused_across_two_slots(self) -> None:
+        """Only an inlet sensor exists; CPU must stay blank, not echo the inlet."""
+        cards = summarize_key_readings(
+            parse_sensor_output("Inlet Temp | 04h | ok | 7.1 | 23 degrees C")
+        )
+        self.assertEqual(cards[0].value, "23")
+        self.assertEqual(cards[1].value, "--")
+        self.assertEqual(cards[2].value, "--")
 
 
 if __name__ == "__main__":

@@ -35,14 +35,15 @@ class UiStartupTests(unittest.TestCase):
             app._refresh_connection_summary()
             app.update_idletasks()
 
-            self.assertEqual(app.connection_status_label.cget("text"), "READY")
-            self.assertEqual(app.server_chip.cget("text"), "●  IDRAC  READY")
+            self.assertEqual(app.connection_status_label.cget("text"), "就绪")
+            self.assertEqual(app.server_chip.cget("text"), "●  iDRAC  就绪")
             primary_text = " ".join(
                 (app.connection_status_label.cget("text"), app.server_chip.cget("text"))
             )
             self.assertNotIn("198.51.100.77", primary_text)
             self.assertNotIn("hidden-admin", primary_text)
             self.assertNotIn("PASSWORD", primary_text)
+            self.assertNotIn("密码", primary_text)
             self.assertNotIn("do-not-display", primary_text)
         finally:
             app.destroy()
@@ -112,7 +113,7 @@ class UiStartupTests(unittest.TestCase):
         try:
             app.busy = True
             app._command_done(result, dialog.show_result, dialog.finish_loading, False)
-            self.assertIn("ALL 50", dialog.summary_label.cget("text"))
+            self.assertIn("共 50 条", dialog.summary_label.cget("text"))
             import customtkinter as ctk
 
             children = dialog.sensor_list.winfo_children()
@@ -122,7 +123,7 @@ class UiStartupTests(unittest.TestCase):
             headers = [child for child in children if isinstance(child, ctk.CTkLabel)]
             self.assertEqual(len(rows), 50)
             self.assertEqual(len(headers), 1)
-            self.assertIn("TEMPERATURE", headers[0].cget("text"))
+            self.assertIn("温度", headers[0].cget("text"))
             event_log = app.log.get("1.0", "end")
             self.assertIn("结果已显示在传感器窗口", event_log)
             self.assertNotIn("Sensor 49", event_log)
@@ -142,6 +143,125 @@ class UiStartupTests(unittest.TestCase):
                 first._close()
                 app._open_sensor_monitor()
                 self.assertIs(app.sensor_dialog, first)
+        finally:
+            app.destroy()
+
+    def test_readings_row_fills_three_temperatures_and_live_power(self) -> None:
+        from r730xd_fan.ipmi import CommandResult, sensor_snapshot_request
+        from r730xd_fan.ui import FanConsole
+
+        app = FanConsole(startup_message="readings row test")
+        try:
+            app.withdraw()
+            result = CommandResult(
+                request=sensor_snapshot_request(),
+                returncode=0,
+                stdout="\n".join(
+                    (
+                        "Inlet Temp | 04h | ok | 7.1 | 23 degrees C",
+                        "Exhaust Temp | 01h | ok | 7.1 | 35 degrees C",
+                        "Temp | 0Eh | ok | 3.1 | 48 degrees C",
+                        "Fan1A RPM | 30h | ok | 7.1 | 5880 RPM",
+                        "Pwr Consumption | 77h | ok | 7.1 | 133 Watts",
+                    )
+                ),
+                stderr="",
+                elapsed_seconds=0.8,
+            )
+            app.apply_sensor_snapshot(result)
+            app.update_idletasks()
+
+            values = [card.value_label.cget("text") for card in app.reading_cards]
+            self.assertEqual(values, ["23", "35", "48", "133"])
+            details = [card.detail_label.cget("text") for card in app.reading_cards]
+            self.assertEqual(
+                details, ["Inlet Temp", "Exhaust Temp", "Temp", "Pwr Consumption"]
+            )
+        finally:
+            app.destroy()
+
+    def test_missing_sensors_stay_blank_instead_of_borrowing_another_reading(self) -> None:
+        from r730xd_fan.ipmi import CommandResult, sensor_snapshot_request
+        from r730xd_fan.ui import FanConsole
+
+        app = FanConsole(startup_message="absent sensor test")
+        try:
+            app.withdraw()
+            app.apply_sensor_snapshot(
+                CommandResult(
+                    request=sensor_snapshot_request(),
+                    returncode=0,
+                    stdout="Fan1A RPM | 30h | ok | 7.1 | 5880 RPM",
+                    stderr="",
+                    elapsed_seconds=0.2,
+                )
+            )
+            app.update_idletasks()
+            self.assertEqual(
+                [card.value_label.cget("text") for card in app.reading_cards],
+                ["--", "--", "--", "--"],
+            )
+        finally:
+            app.destroy()
+
+    def test_background_poll_is_silent_on_success_and_skipped_while_busy(self) -> None:
+        """The event log is for operator actions, not for housekeeping."""
+        from r730xd_fan.ipmi import CommandResult, sensor_snapshot_request
+        from r730xd_fan.ui import FanConsole
+
+        app = FanConsole(startup_message="quiet poll test")
+        try:
+            app.withdraw()
+            app.host_var.set("198.51.100.9")
+            app.user_var.set("root")
+            app.password_var.set("secret")
+            app.exe_var.set("C:/Dell/ipmitool.exe")
+
+            result = CommandResult(
+                request=sensor_snapshot_request(),
+                returncode=0,
+                stdout="Inlet Temp | 04h | ok | 7.1 | 21 degrees C",
+                stderr="",
+                elapsed_seconds=0.4,
+            )
+
+            # Drive the completion path directly, the way the other tests here
+            # do: the worker thread hands back through after() and pumping that
+            # from a test harness is a race, not a behaviour worth asserting.
+            app.busy = True
+            app._command_done(
+                result, app.apply_sensor_snapshot, None, False, quiet=True
+            )
+            app.update_idletasks()
+
+            log = app.log.get("1.0", "end")
+            self.assertNotIn("[SEND", log)
+            self.assertNotIn("[OK", log)
+            self.assertEqual(app.reading_cards[0].value_label.cget("text"), "21")
+
+            # A failing poll must still be audible: silent success, loud error.
+            app.busy = True
+            app._command_done(
+                CommandResult(
+                    request=sensor_snapshot_request(),
+                    returncode=1,
+                    stdout="",
+                    stderr="Address lookup failed",
+                    elapsed_seconds=0.1,
+                ),
+                app.apply_sensor_snapshot,
+                None,
+                False,
+                quiet=True,
+            )
+            self.assertIn("Address lookup failed", app.log.get("1.0", "end"))
+
+            # A user command in flight must not be elbowed aside by the poll.
+            app.busy = True
+            with patch("r730xd_fan.ui.execute") as execute:
+                app._poll_readings()
+            execute.assert_not_called()
+            self.assertNotIn("[BUSY", app.log.get("1.0", "end"))
         finally:
             app.destroy()
 

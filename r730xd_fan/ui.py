@@ -11,6 +11,7 @@ import customtkinter as ctk
 from .config import IpmiSettings
 from .ipmi import (
     CommandResult,
+    KeyReading,
     SensorReading,
     auto_mode_request,
     connection_test_request,
@@ -19,6 +20,7 @@ from .ipmi import (
     parse_sensor_output,
     sensor_snapshot_request,
     speed_request,
+    summarize_key_readings,
 )
 
 COLORS = {
@@ -39,6 +41,95 @@ COLORS = {
     "red": "#D8474C",
     "red_hover": "#BE3D42",
 }
+
+
+# Chinese display names for the SDR categories. The category codes themselves
+# stay English (they are data, asserted in tests); only the label is localised.
+CATEGORY_LABELS = {
+    "TEMPERATURE": "温度",
+    "FAN": "风扇",
+    "POWER": "功耗",
+    "VOLTAGE": "电压",
+    "CURRENT": "电流",
+    "SYSTEM": "其他",
+}
+
+# How often the readings row re-reads the sensors. Deliberately slow: a full
+# `sdr elist all` is a heavy operation for an iDRAC8 BMC, and hammering it is
+# what exhausts IPMI sessions (see D-022 / E-031 on the Web side). A fan
+# console does not need sub-minute resolution.
+READINGS_POLL_SECONDS = 60
+
+
+class ReadingCard(ctk.CTkFrame):
+    """One headline number, styled like the .reading article in app.css."""
+
+    def __init__(self, master: ctk.CTkBaseClass, label: str, unit: str) -> None:
+        super().__init__(
+            master,
+            corner_radius=14,
+            border_width=1,
+            border_color=COLORS["line"],
+            fg_color=COLORS["surface_2"],
+        )
+        self.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            self,
+            text=label,
+            anchor="w",
+            text_color=COLORS["muted"],
+            font=("Microsoft YaHei UI", 11),
+        ).grid(row=0, column=0, padx=14, pady=(12, 0), sticky="w")
+
+        value_row = ctk.CTkFrame(self, fg_color="transparent")
+        value_row.grid(row=1, column=0, padx=14, pady=(2, 0), sticky="w")
+        self.value_label = ctk.CTkLabel(
+            value_row,
+            text="--",
+            text_color=COLORS["text"],
+            font=("Cascadia Mono", 30, "bold"),
+        )
+        self.value_label.pack(side="left")
+        ctk.CTkLabel(
+            value_row,
+            text=unit,
+            text_color=COLORS["muted"],
+            font=("Cascadia Mono", 12),
+        ).pack(side="left", padx=(5, 0), pady=(11, 0))
+
+        foot = ctk.CTkFrame(self, fg_color="transparent")
+        foot.grid(row=2, column=0, padx=14, pady=(1, 12), sticky="ew")
+        foot.grid_columnconfigure(0, weight=1)
+        self.detail_label = ctk.CTkLabel(
+            foot,
+            text="等待数据",
+            anchor="w",
+            text_color=COLORS["muted"],
+            font=("Microsoft YaHei UI", 9),
+        )
+        self.detail_label.grid(row=0, column=0, sticky="w")
+        self.health_label = ctk.CTkLabel(
+            foot,
+            text="未知",
+            text_color=COLORS["muted"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        self.health_label.grid(row=0, column=1, sticky="e")
+
+    def update_reading(self, reading: KeyReading) -> None:
+        alert = reading.status == "alert"
+        self.value_label.configure(
+            text=reading.value,
+            # Colour carries meaning and nothing else (D-014): a reading only
+            # goes red when the BMC itself flags it.
+            text_color=COLORS["red"] if alert else COLORS["text"],
+        )
+        self.detail_label.configure(text=reading.detail)
+        self.health_label.configure(
+            text={"ok": "正常", "alert": "异常"}.get(reading.status, "未知"),
+            text_color=COLORS["red"] if alert else COLORS["muted"],
+        )
 
 
 class FanGauge(ctk.CTkFrame):
@@ -120,9 +211,9 @@ class FanGauge(ctk.CTkFrame):
         canvas.create_text(
             center_x,
             label_y,
-            text="PERCENT OUTPUT",
+            text="转速百分比",
             fill=COLORS["muted"],
-            font=("Cascadia Mono", max(8, round(10 * scale)), "bold"),
+            font=("Microsoft YaHei UI", max(8, round(10 * scale)), "bold"),
         )
         zero_x, marker_y = point(34, 190)
         hundred_x, _ = point(220, 190)
@@ -144,7 +235,7 @@ class ConnectionDialog(ctk.CTkToplevel):
     def __init__(self, owner: FanConsole) -> None:
         super().__init__(owner, fg_color=COLORS["background"])
         self.owner = owner
-        self.title("iDRAC Connection Settings")
+        self.title("iDRAC 连接设置")
         self.geometry("580x520")
         self.minsize(500, 480)
         self.resizable(True, True)
@@ -162,7 +253,7 @@ class ConnectionDialog(ctk.CTkToplevel):
         header.grid(row=0, column=0, sticky="ew")
         ctk.CTkLabel(
             header,
-            text="IDRAC  /  CONNECTION SETTINGS",
+            text="iDRAC 连接设置",
             text_color=COLORS["text"],
             font=("Microsoft YaHei UI", 18, "bold"),
         ).pack(anchor="w", padx=24, pady=(20, 4))
@@ -183,13 +274,13 @@ class ConnectionDialog(ctk.CTkToplevel):
         form.grid(row=1, column=0, padx=22, pady=20, sticky="nsew")
         form.grid_columnconfigure((0, 1), weight=1)
 
-        self._add_entry(form, "IDRAC HOST", self.host_var, row=0, column=0)
-        self._add_entry(form, "USERNAME", self.user_var, row=0, column=1)
+        self._add_entry(form, "iDRAC 地址", self.host_var, row=0, column=0)
+        self._add_entry(form, "用户名", self.user_var, row=0, column=1)
         self.password_entry = self._add_entry(
-            form, "PASSWORD", self.password_var, row=1, column=0, columnspan=2, show="●"
+            form, "密码", self.password_var, row=1, column=0, columnspan=2, show="●"
         )
         self._add_entry(
-            form, "IPMITOOL EXECUTABLE", self.exe_var, row=2, column=0, columnspan=2
+            form, "ipmitool 路径", self.exe_var, row=2, column=0, columnspan=2
         )
 
         show_password = ctk.CTkCheckBox(
@@ -212,24 +303,24 @@ class ConnectionDialog(ctk.CTkToplevel):
         actions.grid_columnconfigure((0, 1), weight=1)
         ctk.CTkButton(
             actions,
-            text="CANCEL",
+            text="取消",
             height=42,
-            corner_radius=8,
+            corner_radius=10,
             fg_color=COLORS["surface_2"],
             hover_color=COLORS["line"],
             border_width=1,
             border_color=COLORS["line"],
-            font=("Cascadia Mono", 10, "bold"),
+            font=("Microsoft YaHei UI", 11, "bold"),
             command=self.destroy,
         ).grid(row=0, column=0, padx=(0, 6), sticky="ew")
         ctk.CTkButton(
             actions,
-            text="APPLY SETTINGS",
+            text="保存设置",
             height=42,
-            corner_radius=8,
+            corner_radius=10,
             fg_color=COLORS["control"],
             hover_color=COLORS["control_hover"],
-            font=("Cascadia Mono", 10, "bold"),
+            font=("Microsoft YaHei UI", 11, "bold"),
             command=self._save,
         ).grid(row=0, column=1, padx=(6, 0), sticky="ew")
 
@@ -259,7 +350,7 @@ class ConnectionDialog(ctk.CTkToplevel):
             field,
             text=label,
             text_color=COLORS["muted"],
-            font=("Cascadia Mono", 9, "bold"),
+            font=("Microsoft YaHei UI", 10, "bold"),
         ).pack(anchor="w", pady=(0, 5))
         entry = ctk.CTkEntry(
             field,
@@ -305,7 +396,7 @@ class SensorDialog(ctk.CTkToplevel):
     def __init__(self, owner: FanConsole) -> None:
         super().__init__(owner, fg_color=COLORS["background"])
         self.owner = owner
-        self.title("iDRAC Sensor Monitor")
+        self.title("完整传感器扫描")
         self.geometry("920x640")
         self.minsize(650, 450)
         self.transient(owner)
@@ -321,7 +412,7 @@ class SensorDialog(ctk.CTkToplevel):
         title_box.grid(row=0, column=0, padx=24, pady=17, sticky="w")
         ctk.CTkLabel(
             title_box,
-            text="IDRAC  /  SENSOR MONITOR",
+            text="完整传感器扫描",
             text_color=COLORS["text"],
             font=("Microsoft YaHei UI", 18, "bold"),
         ).pack(anchor="w")
@@ -334,13 +425,13 @@ class SensorDialog(ctk.CTkToplevel):
 
         self.refresh_button = ctk.CTkButton(
             header,
-            text="REFRESH",
+            text="刷新",
             width=108,
             height=30,
-            corner_radius=7,
+            corner_radius=8,
             fg_color=COLORS["control"],
             hover_color=COLORS["control_hover"],
-            font=("Cascadia Mono", 9, "bold"),
+            font=("Microsoft YaHei UI", 10, "bold"),
             command=self.refresh,
         )
         self.refresh_button.grid(row=0, column=1, padx=24, pady=20, sticky="e")
@@ -350,9 +441,9 @@ class SensorDialog(ctk.CTkToplevel):
         summary.grid_columnconfigure(0, weight=1)
         self.summary_label = ctk.CTkLabel(
             summary,
-            text="WAITING FOR SENSOR DATA",
+            text="等待传感器数据",
             text_color=COLORS["reading"],
-            font=("Cascadia Mono", 10, "bold"),
+            font=("Microsoft YaHei UI", 11, "bold"),
         )
         self.summary_label.grid(row=0, column=0, sticky="w")
         self.updated_label = ctk.CTkLabel(
@@ -435,12 +526,12 @@ class SensorDialog(ctk.CTkToplevel):
     def set_loading(self) -> None:
         if not self._alive():
             return
-        self.refresh_button.configure(state="disabled", text="READING...")
-        self.updated_label.configure(text="QUERYING SDR")
+        self.refresh_button.configure(state="disabled", text="读取中…")
+        self.updated_label.configure(text="正在读取 SDR")
 
     def finish_loading(self) -> None:
         if self._alive():
-            self.refresh_button.configure(state="normal", text="REFRESH")
+            self.refresh_button.configure(state="normal", text="刷新")
 
     def show_result(self, result: CommandResult) -> None:
         if not self._alive():
@@ -452,15 +543,15 @@ class SensorDialog(ctk.CTkToplevel):
         fans = sum(item.category == "FAN" for item in readings)
         alerts = sum(item.is_alert for item in readings)
         summary_text = (
-            f"ALL {len(readings):02d}  /  TEMP {temperatures:02d}  /  "
-            f"FAN {fans:02d}  /  ALERT {alerts:02d}"
+            f"共 {len(readings)} 条  ·  温度 {temperatures}  ·  "
+            f"风扇 {fans}  ·  告警 {alerts}"
         )
         self.summary_label.configure(
             text=summary_text,
             text_color=COLORS["red"] if alerts else COLORS["ok"],
         )
         self.updated_label.configure(
-            text=f"UPDATED {datetime.now().strftime('%H:%M:%S')}  /  {result.elapsed_seconds:.2f}s"
+            text=f"更新于 {datetime.now().strftime('%H:%M:%S')}  ·  {result.elapsed_seconds:.2f} s"
         )
         self.owner._append_log(
             "SENSOR",
@@ -513,10 +604,10 @@ class SensorDialog(ctk.CTkToplevel):
                 count = sum(item.category == current_category for _, item in ordered)
                 ctk.CTkLabel(
                     self.sensor_list,
-                    text=f"{current_category}  ({count})",
+                    text=f"{CATEGORY_LABELS.get(current_category, current_category)}  ({count})",
                     anchor="w",
                     text_color=COLORS["text"],
-                    font=("Cascadia Mono", 9, "bold"),
+                    font=("Microsoft YaHei UI", 10, "bold"),
                 ).pack(
                     fill="x",
                     padx=8,
@@ -605,8 +696,10 @@ class SensorDialog(ctk.CTkToplevel):
 class FanConsole(ctk.CTk):
     def __init__(self, startup_message: str | None = None) -> None:
         super().__init__(fg_color=COLORS["background"])
-        self.title("R730xd Thermal Control Console")
-        self.geometry("1120x820")
+        self.title("R730xd 热控控制台")
+        # The readings row costs about 150 px of height, and the connection card
+        # must stay above the fold: it is the first thing a new user needs.
+        self.geometry("1180x940")
         self.minsize(900, 700)
 
         defaults = IpmiSettings.from_environment()
@@ -616,6 +709,8 @@ class FanConsole(ctk.CTk):
         self.action_buttons: list[ctk.CTkButton] = []
         self.speed_buttons: list[ctk.CTkButton] = []
         self.sensor_dialog: SensorDialog | None = None
+        self.reading_cards: list[ReadingCard] = []
+        self._poll_job: str | None = None
 
         self.host_var = tk.StringVar(value=defaults.host)
         self.user_var = tk.StringVar(value=defaults.username)
@@ -631,6 +726,7 @@ class FanConsole(ctk.CTk):
         self._refresh_connection_summary()
         self._append_log("SYSTEM", startup_message or "控制台就绪。先测试连接，再解除安全联锁。")
         self._update_controls()
+        self._schedule_poll(first=True)
 
     def _build_header(self) -> None:
         header = ctk.CTkFrame(self, height=92, corner_radius=0, fg_color=COLORS["surface"])
@@ -641,25 +737,25 @@ class FanConsole(ctk.CTk):
         title_box.grid(row=0, column=0, padx=28, pady=18, sticky="w")
         ctk.CTkLabel(
             title_box,
-            text="R730XD  /  THERMAL CONTROL",
+            text="R730XD 热控",
             text_color=COLORS["text"],
             font=("Microsoft YaHei UI", 22, "bold"),
         ).pack(anchor="w")
         ctk.CTkLabel(
             title_box,
-            text="Dell PowerEdge · iDRAC fan override console",
+            text="Dell PowerEdge · iDRAC 风扇接管控制台",
             text_color=COLORS["muted"],
-            font=("Cascadia Mono", 11),
+            font=("Microsoft YaHei UI", 11),
         ).pack(anchor="w", pady=(4, 0))
 
         self.server_chip = ctk.CTkLabel(
             header,
-            text="●  IDRAC  SETUP REQUIRED",
+            text="●  iDRAC  需要配置",
             height=36,
             corner_radius=18,
             fg_color=COLORS["surface_2"],
             text_color=COLORS["reading"],
-            font=("Cascadia Mono", 11, "bold"),
+            font=("Microsoft YaHei UI", 11, "bold"),
         )
         self.server_chip.grid(row=0, column=1, padx=28, pady=25, sticky="e")
 
@@ -668,7 +764,9 @@ class FanConsole(ctk.CTk):
         body.grid(row=1, column=0, padx=22, pady=18, sticky="nsew")
         body.grid_columnconfigure(0, weight=3, minsize=280)
         body.grid_columnconfigure(1, weight=7, minsize=0)
-        body.grid_rowconfigure(0, weight=1)
+        body.grid_rowconfigure(1, weight=1)
+
+        self._build_readings_row(body)
 
         self.left_scroll = ctk.CTkScrollableFrame(
             body,
@@ -681,7 +779,7 @@ class FanConsole(ctk.CTk):
             scrollbar_button_hover_color=COLORS["muted"],
             orientation="vertical",
         )
-        self.left_scroll.grid(row=0, column=0, padx=(0, 14), sticky="nsew")
+        self.left_scroll.grid(row=1, column=0, padx=(0, 14), sticky="nsew")
         self._build_mode_card(self.left_scroll)
         self._build_connection_card(self.left_scroll)
 
@@ -692,32 +790,116 @@ class FanConsole(ctk.CTk):
             border_color=COLORS["line"],
             fg_color=COLORS["surface"],
         )
-        right.grid(row=0, column=1, sticky="nsew")
+        right.grid(row=1, column=1, sticky="nsew")
         self._build_output_card(right)
+
+    def _build_readings_row(self, body: ctk.CTkFrame) -> None:
+        """The four headline numbers: three temperatures plus live power.
+
+        Same four cards as the Web console's readings row. The Web-only trend
+        chart is deliberately absent — the desktop keeps no sample history.
+        """
+        row = ctk.CTkFrame(body, fg_color="transparent")
+        row.grid(row=0, column=0, columnspan=2, pady=(0, 14), sticky="ew")
+        for column in range(4):
+            row.grid_columnconfigure(column, weight=1, uniform="readings")
+
+        for index, (label, unit) in enumerate(
+            (("进风温度", "°C"), ("排风温度", "°C"), ("CPU 温度", "°C"), ("实时功耗", "W"))
+        ):
+            card = ReadingCard(row, label, unit)
+            card.grid(
+                row=0,
+                column=index,
+                padx=(0 if index == 0 else 7, 0 if index == 3 else 7),
+                sticky="ew",
+            )
+            self.reading_cards.append(card)
+
+        self.readings_meta = ctk.CTkLabel(
+            row,
+            text="等待数据",
+            anchor="w",
+            text_color=COLORS["muted"],
+            font=("Microsoft YaHei UI", 9),
+        )
+        self.readings_meta.grid(row=1, column=0, columnspan=4, pady=(7, 0), sticky="w")
+
+    def apply_sensor_snapshot(self, result: CommandResult) -> None:
+        """Feed the readings row from any successful `sdr elist all`.
+
+        Both the background poll and the full-scan window land here, so one
+        BMC round trip updates everything that is on screen.
+        """
+        readings = parse_sensor_output(result.stdout)
+        cards = summarize_key_readings(readings)
+        for card, reading in zip(self.reading_cards, cards, strict=True):
+            card.update_reading(reading)
+        self.readings_meta.configure(
+            text=(
+                f"更新于 {datetime.now().strftime('%H:%M:%S')}"
+                f" · 共 {len(readings)} 条记录"
+                f" · 每 {READINGS_POLL_SECONDS} 秒自动刷新"
+            )
+        )
+
+    def _configured(self) -> bool:
+        return all(
+            (
+                self.host_var.get().strip(),
+                self.user_var.get().strip(),
+                self.password_var.get(),
+                self.exe_var.get().strip(),
+            )
+        )
+
+    def _schedule_poll(self, *, first: bool = False) -> None:
+        if self._poll_job is not None:
+            self.after_cancel(self._poll_job)
+        delay = 3000 if first else READINGS_POLL_SECONDS * 1000
+        self._poll_job = self.after(delay, self._poll_readings)
+
+    def _poll_readings(self) -> None:
+        """Quiet background refresh of the readings row.
+
+        Never queues behind a user action and never writes to the event log on
+        success: the log is for things the operator did, not for housekeeping.
+        Failures are still logged, otherwise a dead link would look like
+        stale-but-fine data.
+        """
+        self._poll_job = None
+        if self._configured() and not self.busy:
+            self._submit(
+                sensor_snapshot_request(),
+                success=self.apply_sensor_snapshot,
+                log_stdout=False,
+                quiet=True,
+            )
+        self._schedule_poll()
 
     def _section_label(self, master: ctk.CTkBaseClass, text: str) -> ctk.CTkLabel:
         return ctk.CTkLabel(
             master,
-            text=text.upper(),
+            text=text,
             text_color=COLORS["muted"],
-            font=("Cascadia Mono", 10, "bold"),
+            font=("Microsoft YaHei UI", 10, "bold"),
         )
 
     def _build_mode_card(self, parent: ctk.CTkFrame) -> None:
         section = ctk.CTkFrame(parent, fg_color="transparent")
-        section.pack(fill="x", padx=20, pady=(20, 14))
-        self._section_label(section, "01 / CONTROL MODE").pack(anchor="w")
+        section.pack(fill="x", padx=20, pady=(18, 10))
+        self._section_label(section, "01 / 控制模式").pack(anchor="w")
 
         mode_row = ctk.CTkFrame(section, fg_color="transparent")
-        mode_row.pack(fill="x", pady=(11, 12))
+        mode_row.pack(fill="x", pady=(10, 10))
         self.mode_badge = ctk.CTkLabel(
             mode_row,
-            text="STATE UNKNOWN",
+            text="状态未知",
             height=34,
-            corner_radius=7,
+            corner_radius=8,
             fg_color=COLORS["surface_2"],
             text_color=COLORS["muted"],
-            font=("Cascadia Mono", 11, "bold"),
+            font=("Microsoft YaHei UI", 11, "bold"),
         )
         self.mode_badge.pack(fill="x")
 
@@ -735,12 +917,12 @@ class FanConsole(ctk.CTk):
 
         self.manual_button = ctk.CTkButton(
             section,
-            text="ENABLE MANUAL CONTROL",
+            text="接管风扇控制",
             height=42,
-            corner_radius=8,
+            corner_radius=10,
             fg_color=COLORS["red"],
             hover_color=COLORS["red_hover"],
-            font=("Cascadia Mono", 11, "bold"),
+            font=("Microsoft YaHei UI", 12, "bold"),
             command=self._enable_manual,
         )
         self.manual_button.pack(fill="x", pady=(0, 8))
@@ -748,14 +930,14 @@ class FanConsole(ctk.CTk):
 
         self.auto_button = ctk.CTkButton(
             section,
-            text="RESTORE AUTO THERMAL",
+            text="恢复自动温控",
             height=38,
-            corner_radius=8,
+            corner_radius=10,
             fg_color=COLORS["surface_2"],
             hover_color=COLORS["line"],
             border_width=1,
             border_color=COLORS["line"],
-            font=("Cascadia Mono", 10, "bold"),
+            font=("Microsoft YaHei UI", 11, "bold"),
             command=self._restore_auto,
         )
         self.auto_button.pack(fill="x")
@@ -767,14 +949,14 @@ class FanConsole(ctk.CTk):
             justify="left",
             text_color=COLORS["muted"],
             font=("Microsoft YaHei UI", 10),
-        ).pack(anchor="w", pady=(12, 0))
+        ).pack(anchor="w", pady=(9, 0))
 
         ctk.CTkFrame(parent, height=1, fg_color=COLORS["line"]).pack(fill="x", padx=20)
 
     def _build_connection_card(self, parent: ctk.CTkFrame) -> None:
         section = ctk.CTkFrame(parent, fg_color="transparent")
-        section.pack(fill="both", expand=True, padx=20, pady=16)
-        self._section_label(section, "02 / CONNECTION").pack(anchor="w", pady=(0, 10))
+        section.pack(fill="both", expand=True, padx=20, pady=(12, 16))
+        self._section_label(section, "02 / 连接").pack(anchor="w", pady=(0, 10))
 
         summary = ctk.CTkFrame(
             section,
@@ -786,22 +968,22 @@ class FanConsole(ctk.CTk):
         summary.pack(fill="x", pady=(0, 10))
         self.connection_status_label = ctk.CTkLabel(
             summary,
-            text="SETUP REQUIRED",
+            text="需要配置",
             text_color=COLORS["amber"],
-            font=("Cascadia Mono", 12, "bold"),
+            font=("Microsoft YaHei UI", 12, "bold"),
         )
-        self.connection_status_label.pack(fill="x", padx=12, pady=17)
+        self.connection_status_label.pack(fill="x", padx=12, pady=13)
 
         self.settings_button = ctk.CTkButton(
             section,
-            text="OPEN CONNECTION SETTINGS",
+            text="连接设置",
             height=38,
-            corner_radius=8,
+            corner_radius=10,
             fg_color=COLORS["surface_2"],
             hover_color=COLORS["line"],
             border_width=1,
             border_color=COLORS["line"],
-            font=("Cascadia Mono", 9, "bold"),
+            font=("Microsoft YaHei UI", 11, "bold"),
             command=self._open_connection_settings,
         )
         self.settings_button.pack(fill="x", pady=(0, 8))
@@ -813,12 +995,12 @@ class FanConsole(ctk.CTk):
 
         self.test_button = ctk.CTkButton(
             quick_actions,
-            text="TEST",
+            text="测试连接",
             height=32,
-            corner_radius=8,
+            corner_radius=10,
             fg_color=COLORS["control"],
             hover_color=COLORS["control_hover"],
-            font=("Cascadia Mono", 9, "bold"),
+            font=("Microsoft YaHei UI", 10, "bold"),
             command=self._test_connection,
         )
         self.test_button.grid(row=0, column=0, padx=(0, 4), sticky="ew")
@@ -826,14 +1008,14 @@ class FanConsole(ctk.CTk):
 
         self.sensor_button = ctk.CTkButton(
             quick_actions,
-            text="SENSORS",
+            text="完整扫描",
             height=32,
-            corner_radius=8,
+            corner_radius=10,
             fg_color=COLORS["surface_2"],
             hover_color=COLORS["line"],
             border_width=1,
             border_color=COLORS["line"],
-            font=("Cascadia Mono", 9, "bold"),
+            font=("Microsoft YaHei UI", 10, "bold"),
             command=self._open_sensor_monitor,
         )
         self.sensor_button.grid(row=0, column=1, padx=(4, 0), sticky="ew")
@@ -845,12 +1027,12 @@ class FanConsole(ctk.CTk):
         top = ctk.CTkFrame(parent, fg_color="transparent")
         top.grid(row=0, column=0, padx=24, pady=(20, 0), sticky="ew")
         top.grid_columnconfigure(0, weight=1)
-        self._section_label(top, "03 / FAN OUTPUT").grid(row=0, column=0, sticky="w")
+        self._section_label(top, "03 / 风扇输出").grid(row=0, column=0, sticky="w")
         self.output_status = ctk.CTkLabel(
             top,
-            text="LOCKED",
+            text="未接管",
             text_color=COLORS["amber"],
-            font=("Cascadia Mono", 10, "bold"),
+            font=("Microsoft YaHei UI", 10, "bold"),
         )
         self.output_status.grid(row=0, column=1, sticky="e")
 
@@ -870,24 +1052,24 @@ class FanConsole(ctk.CTk):
         preset_box.grid_columnconfigure((0, 1), weight=1)
         ctk.CTkLabel(
             preset_box,
-            text="QUICK PRESETS",
+            text="快速档位",
             text_color=COLORS["text"],
-            font=("Cascadia Mono", 12, "bold"),
+            font=("Microsoft YaHei UI", 12, "bold"),
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(8, 12))
 
-        presets = ((10, "QUIET"), (15, "DAILY"), (20, "SUMMER"), (30, "LOAD"))
+        presets = ((10, "静音"), (15, "日常"), (20, "夏季"), (30, "满载"))
         for index, (percent, label) in enumerate(presets):
             button = ctk.CTkButton(
                 preset_box,
                 text=f"{percent:02d}%\n{label}",
                 height=74,
-                corner_radius=10,
+                corner_radius=14,
                 fg_color=COLORS["surface_2"],
                 hover_color=COLORS["control_hover"],
                 border_width=1,
                 border_color=COLORS["line"],
                 text_color=COLORS["text"],
-                font=("Cascadia Mono", 12, "bold"),
+                font=("Microsoft YaHei UI", 12, "bold"),
                 command=lambda value=percent: self._set_speed(value),
             )
             button.grid(
@@ -902,9 +1084,9 @@ class FanConsole(ctk.CTk):
         self.custom_value = tk.IntVar(value=10)
         self.slider_value = ctk.CTkLabel(
             preset_box,
-            text="CUSTOM 10%",
+            text="自定义 10%",
             text_color=COLORS["reading"],
-            font=("Cascadia Mono", 11, "bold"),
+            font=("Microsoft YaHei UI", 11, "bold"),
         )
         self.slider_value.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 3))
         self.speed_slider = ctk.CTkSlider(
@@ -921,12 +1103,12 @@ class FanConsole(ctk.CTk):
         self.speed_slider.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(2, 9))
         self.apply_button = ctk.CTkButton(
             preset_box,
-            text="APPLY CUSTOM OUTPUT",
+            text="应用自定义转速",
             height=38,
-            corner_radius=8,
+            corner_radius=10,
             fg_color=COLORS["control"],
             hover_color=COLORS["control_hover"],
-            font=("Cascadia Mono", 10, "bold"),
+            font=("Microsoft YaHei UI", 11, "bold"),
             command=lambda: self._set_speed(int(self.custom_value.get())),
         )
         self.apply_button.grid(row=5, column=0, columnspan=2, sticky="ew")
@@ -942,9 +1124,9 @@ class FanConsole(ctk.CTk):
         warning.grid(row=2, column=0, padx=24, pady=(0, 20), sticky="ew")
         ctk.CTkLabel(
             warning,
-            text="THERMAL NOTE",
+            text="温控提示",
             text_color=COLORS["amber"],
-            font=("Cascadia Mono", 10, "bold"),
+            font=("Microsoft YaHei UI", 10, "bold"),
         ).pack(anchor="w", padx=14, pady=(10, 2))
         ctk.CTkLabel(
             warning,
@@ -956,7 +1138,7 @@ class FanConsole(ctk.CTk):
     def _build_log_panel(self) -> None:
         panel = ctk.CTkFrame(
             self,
-            height=170,
+            height=128,
             corner_radius=14,
             border_width=1,
             border_color=COLORS["line"],
@@ -964,26 +1146,26 @@ class FanConsole(ctk.CTk):
         )
         panel.grid(row=2, column=0, padx=22, pady=(0, 20), sticky="ew")
         panel.grid_columnconfigure(0, weight=1)
-        self._section_label(panel, "04 / EVENT LOG").grid(
+        self._section_label(panel, "04 / 事件日志").grid(
             row=0, column=0, padx=18, pady=(12, 5), sticky="w"
         )
         clear = ctk.CTkButton(
             panel,
-            text="CLEAR",
+            text="清空",
             width=68,
             height=26,
-            corner_radius=6,
+            corner_radius=8,
             fg_color="transparent",
             hover_color=COLORS["surface_2"],
             border_width=1,
             border_color=COLORS["line"],
-            font=("Cascadia Mono", 9, "bold"),
+            font=("Microsoft YaHei UI", 10, "bold"),
             command=lambda: self.log.delete("1.0", "end"),
         )
         clear.grid(row=0, column=1, padx=18, pady=(12, 5), sticky="e")
         self.log = ctk.CTkTextbox(
             panel,
-            height=112,
+            height=74,
             corner_radius=8,
             fg_color=COLORS["background"],
             border_width=0,
@@ -1016,9 +1198,13 @@ class FanConsole(ctk.CTk):
     def _request_sensor_snapshot(self, dialog: SensorDialog) -> bool:
         if not dialog._alive():
             return False
+        def show(result: CommandResult) -> None:
+            self.apply_sensor_snapshot(result)
+            dialog.show_result(result)
+
         return self._submit(
             sensor_snapshot_request(),
-            success=dialog.show_result,
+            success=show,
             finished=dialog.finish_loading,
             log_stdout=False,
         )
@@ -1032,14 +1218,14 @@ class FanConsole(ctk.CTk):
                 self.exe_var.get().strip(),
             )
         )
-        status = "READY" if configured else "SETUP REQUIRED"
+        status = "就绪" if configured else "需要配置"
         color = COLORS["ok"] if configured else COLORS["amber"]
         self.connection_status_label.configure(text=status, text_color=color)
-        self.server_chip.configure(text=f"●  IDRAC  {status}", text_color=color)
+        self.server_chip.configure(text=f"●  iDRAC  {status}", text_color=color)
 
     def _slider_changed(self, value: float) -> None:
         percent = round(value)
-        self.slider_value.configure(text=f"CUSTOM {percent}%")
+        self.slider_value.configure(text=f"自定义 {percent}%")
         self.gauge.set_value(percent)
 
     def _test_connection(self) -> None:
@@ -1047,7 +1233,7 @@ class FanConsole(ctk.CTk):
 
     def _connection_ok(self, _result: CommandResult) -> None:
         self.server_chip.configure(
-            text="●  IDRAC  ONLINE",
+            text="●  iDRAC  在线",
             text_color=COLORS["ok"],
         )
 
@@ -1060,7 +1246,7 @@ class FanConsole(ctk.CTk):
     def _manual_ok(self, _result: CommandResult) -> None:
         self.manual_mode = True
         self.mode_badge.configure(
-            text="MANUAL OVERRIDE",
+            text="手动接管",
             fg_color="#2A1618",
             text_color="#E5484D",
         )
@@ -1073,7 +1259,7 @@ class FanConsole(ctk.CTk):
         self.manual_mode = False
         self.interlock_var.set(False)
         self.mode_badge.configure(
-            text="AUTO THERMAL",
+            text="自动温控",
             fg_color="#1A1A19",
             text_color="#9A9A95",
         )
@@ -1091,18 +1277,28 @@ class FanConsole(ctk.CTk):
     def _speed_ok(self, _result: CommandResult, percent: int) -> None:
         self.current_speed = percent
         self.custom_value.set(percent)
-        self.slider_value.configure(text=f"CUSTOM {percent}%")
+        self.slider_value.configure(text=f"自定义 {percent}%")
         self.gauge.set_value(percent)
-        self.output_status.configure(text=f"ACTIVE · {percent}%", text_color=COLORS["reading"])
+        self.output_status.configure(text=f"已接管 · {percent}%", text_color=COLORS["reading"])
 
-    def _submit(self, request, success=None, *, finished=None, log_stdout: bool = True) -> bool:
+    def _submit(
+        self,
+        request,
+        success=None,
+        *,
+        finished=None,
+        log_stdout: bool = True,
+        quiet: bool = False,
+    ) -> bool:
         if self.busy:
-            self._append_log("BUSY", "已有命令正在执行，请稍候。")
+            if not quiet:
+                self._append_log("BUSY", "已有命令正在执行，请稍候。")
             return False
 
         self.busy = True
         self._update_controls()
-        self._append_log("SEND", f"{request.label}  /  {request.safe_to_log}")
+        if not quiet:
+            self._append_log("SEND", f"{request.label}  /  {request.safe_to_log}")
         settings = self._settings()
 
         def worker() -> None:
@@ -1123,16 +1319,27 @@ class FanConsole(ctk.CTk):
             else:
                 self.after(
                     0,
-                    lambda: self._command_done(result, success, finished, log_stdout),
+                    lambda: self._command_done(result, success, finished, log_stdout, quiet),
                 )
 
         threading.Thread(target=worker, name="ipmi-command", daemon=True).start()
         return True
 
-    def _command_done(self, result: CommandResult, success, finished, log_stdout: bool) -> None:
+    def _command_done(
+        self,
+        result: CommandResult,
+        success,
+        finished,
+        log_stdout: bool,
+        quiet: bool = False,
+    ) -> None:
         self.busy = False
         try:
             if result.ok:
+                if quiet:
+                    if success:
+                        success(result)
+                    return
                 if log_stdout:
                     detail = (
                         result.stdout.replace("\n", " · ")
@@ -1175,7 +1382,7 @@ class FanConsole(ctk.CTk):
             button.configure(state=speed_state)
         self.speed_slider.configure(state=speed_state)
         self.output_status.configure(
-            text=(f"ACTIVE · {self.current_speed}%" if self.manual_mode else "LOCKED"),
+            text=(f"已接管 · {self.current_speed}%" if self.manual_mode else "未接管"),
             text_color=(COLORS["reading"] if self.manual_mode else COLORS["amber"]),
         )
 
