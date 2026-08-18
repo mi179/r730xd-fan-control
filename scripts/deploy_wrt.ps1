@@ -70,7 +70,9 @@ $packageName = "r730xd-fan-src"
 $stageRoot = Join-Path $stageParent $packageName
 
 try {
-    [IO.Directory]::CreateDirectory((Join-Path $stageRoot "build")) | Out-Null
+    # Mirror the repo layout: the Dockerfile addresses webapp/... and
+    # r730xd_core/... relative to the build context.
+    [IO.Directory]::CreateDirectory((Join-Path $stageRoot "build\webapp")) | Out-Null
 
     foreach ($name in @("install.sh", "verify.sh", "rollback.sh", "compose.offline.yaml", "VERSION", "README.txt")) {
         Copy-Item -LiteralPath (Join-Path $installerRoot $name) -Destination (Join-Path $stageRoot $name)
@@ -79,12 +81,13 @@ try {
 
     # Docker build context: exactly what the Dockerfile COPYs, nothing else.
     # Never the real secrets/ or .env - they are not needed and must not travel.
-    foreach ($name in @("Dockerfile", ".dockerignore", "requirements.txt", "app.py")) {
-        Copy-Item -LiteralPath (Join-Path $webappRoot $name) -Destination (Join-Path $stageRoot "build\$name")
+    foreach ($name in @("Dockerfile", "requirements.txt", "app.py")) {
+        Copy-Item -LiteralPath (Join-Path $webappRoot $name) -Destination (Join-Path $stageRoot "build\webapp\$name")
     }
     foreach ($name in @("templates", "static")) {
-        Copy-Item -LiteralPath (Join-Path $webappRoot $name) -Destination (Join-Path $stageRoot "build\$name") -Recurse
+        Copy-Item -LiteralPath (Join-Path $webappRoot $name) -Destination (Join-Path $stageRoot "build\webapp\$name") -Recurse
     }
+    Copy-Item -LiteralPath (Join-Path $repoRoot ".dockerignore") -Destination (Join-Path $stageRoot "build\.dockerignore")
     # r730xd_core lives at the repo root, outside webapp/, but the image needs
     # it (D-027). Without this the build fails on `import r730xd_core`.
     Copy-Item -LiteralPath (Join-Path $repoRoot "r730xd_core") -Destination (Join-Path $stageRoot "build\r730xd_core") -Recurse
@@ -128,7 +131,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Source upload failed." }
 
         Write-Host "[R730XD] Building $image on the router"
-        & ssh $target "tar -xzf '$remoteRoot/$packageName.tar.gz' -C '$remoteRoot' && docker build -t '$image' '$remoteRoot/$packageName/build'"
+        & ssh $target "tar -xzf '$remoteRoot/$packageName.tar.gz' -C '$remoteRoot' && docker build -t '$image' -f '$remoteRoot/$packageName/build/webapp/Dockerfile' '$remoteRoot/$packageName/build'"
         if ($LASTEXITCODE -ne 0) { throw "Remote image build failed. Nothing was installed." }
 
         Write-Host "[R730XD] Installing (the installer verifies and rolls back on failure)"

@@ -16,6 +16,12 @@ powershell -ExecutionPolicy Bypass -File .\Install-R730xdFan-Web.ps1
 收集网络参数、隐藏输入 iDRAC 密码，完成镜像校验、专网、防火墙、健康检查与备份。
 以下章节主要用于源码开发和手动部署。
 
+**宿主不是 OpenWrt？** 普通 Linux + Docker 的部署走
+[docs/DOCKER-GENERIC.md](../docs/DOCKER-GENERIC.md)——程序完全不用改，镜像是同一个，
+差别只有几处配置，而且**不要跑 `install.sh`**（它会检查 `/etc/openwrt_release` 直接拒绝）。
+那份文档里标红了一个会让人白折腾半天的坑：`IDRAC_ARP_INTERFACE` 的默认值 `br-lan` 是
+OpenWrt 专有的，在普通 Linux 上会让自动发现静默失效。
+
 ## 自己升级：一条命令
 
 维护者升级自己那台 WRT 不需要走离线包。离线包是给**从网上拿到它的人**用的——所以

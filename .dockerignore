@@ -1,0 +1,18 @@
+# Build context is the repository root (see webapp/Dockerfile).
+#
+# Default-deny: the root holds .venv-win/, dist/, .git/ and the real
+# webapp/secrets/idrac_password. An allowlist is the only form where forgetting
+# to add a new exclusion cannot leak something into the image.
+*
+
+!r730xd_core
+!webapp/requirements.txt
+!webapp/app.py
+!webapp/templates
+!webapp/static
+
+# Never, even if something above would otherwise pull them in.
+**/__pycache__
+**/*.py[cod]
+**/secrets
+**/.env

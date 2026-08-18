@@ -16,15 +16,18 @@ RUN apk add --no-cache ca-certificates ipmitool \
 
 WORKDIR /app
 
-COPY requirements.txt ./requirements.txt
+# Paths are relative to the repository root, which is the build context:
+#   docker build -f webapp/Dockerfile -t r730xd-fan-web:<version> .
+# r730xd_core lives outside webapp/, so a webapp-only context cannot work.
+COPY webapp/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Shared with the desktop line (D-027). Copied before app.py so a change to
 # the app does not invalidate this layer.
 COPY --chown=r730xd:r730xd r730xd_core ./r730xd_core
-COPY --chown=r730xd:r730xd app.py ./app.py
-COPY --chown=r730xd:r730xd templates ./templates
-COPY --chown=r730xd:r730xd static ./static
+COPY --chown=r730xd:r730xd webapp/app.py ./app.py
+COPY --chown=r730xd:r730xd webapp/templates ./templates
+COPY --chown=r730xd:r730xd webapp/static ./static
 
 USER 10001:10001
 EXPOSE 8080
