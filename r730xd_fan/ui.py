@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import threading
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
 
 import customtkinter as ctk
+
+from r730xd_core import discovery
 
 from . import presenters
 from .config import IpmiSettings
@@ -195,8 +198,10 @@ class ConnectionDialog(ctk.CTkToplevel):
         super().__init__(owner, fg_color=COLORS["background"])
         self.owner = owner
         self.title("iDRAC 连接设置")
-        self.geometry("580x520")
-        self.minsize(500, 480)
+        # Taller than the field list needs: the scan button and its hint sit
+        # below 显示密码, and clipping them hides the whole point of the dialog.
+        self.geometry("580x620")
+        self.minsize(500, 580)
         self.resizable(True, True)
         self.transient(owner)
 
@@ -255,7 +260,28 @@ class ConnectionDialog(ctk.CTkToplevel):
             text_color=COLORS["muted"],
             font=("Microsoft YaHei UI", 10),
         )
-        show_password.grid(row=3, column=0, columnspan=2, padx=18, pady=(0, 16), sticky="w")
+        show_password.grid(row=3, column=0, columnspan=2, padx=18, pady=(0, 6), sticky="w")
+
+        self.scan_button = ctk.CTkButton(
+            form,
+            text="扫描局域网找 iDRAC",
+            height=34,
+            corner_radius=10,
+            fg_color=COLORS["surface_2"],
+            hover_color=COLORS["line"],
+            border_width=1,
+            border_color=COLORS["line"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+            command=self._scan,
+        )
+        self.scan_button.grid(row=4, column=0, columnspan=2, padx=18, pady=(0, 6), sticky="ew")
+        self.scan_hint = ctk.CTkLabel(
+            form,
+            text="不知道地址就点这里；只发不带密码的探测包",
+            text_color=COLORS["muted"],
+            font=("Microsoft YaHei UI", 9),
+        )
+        self.scan_hint.grid(row=5, column=0, columnspan=2, padx=18, pady=(0, 14), sticky="w")
 
         actions = ctk.CTkFrame(self, fg_color="transparent")
         actions.grid(row=2, column=0, padx=22, pady=(0, 22), sticky="ew")
@@ -324,6 +350,63 @@ class ConnectionDialog(ctk.CTkToplevel):
         )
         entry.pack(fill="x")
         return entry
+
+    def _scan(self) -> None:
+        """Find BMCs on this segment. Runs off the UI thread; ~2 s of waiting."""
+        network = discovery.local_network()
+        if network is None:
+            self.scan_hint.configure(text="无法判断本机所在网段", text_color=COLORS["amber"])
+            return
+        self.scan_button.configure(state="disabled", text="扫描中…")
+        self.scan_hint.configure(
+            text=f"正在探测 {network}…", text_color=COLORS["muted"]
+        )
+
+        def work() -> None:
+            try:
+                found = discovery.discover(
+                    network, discovery.read_arp_table(), timeout=2.5
+                )
+            except Exception as exc:  # boundary: a scan must never kill the dialog
+                message = str(exc)
+                self.after(0, lambda: self._scan_failed(message))
+            else:
+                # Re-read ARP: the probe itself is what populates it.
+                arp = discovery.read_arp_table()
+                resolved = [
+                    discovery.Candidate(
+                        item.address,
+                        item.mac
+                        or {ip: mac for mac, ip in discovery.parse_arp_pairs(arp).items()}.get(
+                            item.address
+                        ),
+                    )
+                    for item in found
+                ]
+                self.after(0, lambda: self._scan_done(resolved))
+
+        threading.Thread(target=work, name="idrac-scan", daemon=True).start()
+
+    def _scan_failed(self, message: str) -> None:
+        self.scan_button.configure(state="normal", text="扫描局域网找 iDRAC")
+        self.scan_hint.configure(text=message, text_color=COLORS["amber"])
+
+    def _scan_done(self, candidates: list) -> None:
+        self.scan_button.configure(state="normal", text="扫描局域网找 iDRAC")
+        if not candidates:
+            self.scan_hint.configure(
+                text="没有设备应答 IPMI；确认 iDRAC 已启用 IPMI over LAN",
+                text_color=COLORS["amber"],
+            )
+            return
+        chosen = candidates[0]
+        self.host_var.set(chosen.address)
+        if chosen.mac:
+            self.owner.remembered_mac = chosen.mac
+        extra = f"；还发现 {len(candidates) - 1} 台，如需其它请手填" if len(candidates) > 1 else ""
+        self.scan_hint.configure(
+            text=f"找到 {chosen.label}{extra}", text_color=COLORS["ok"]
+        )
 
     def _activate(self) -> None:
         self.grab_set()
@@ -639,6 +722,9 @@ class FanConsole(ctk.CTk):
         # Only re-sync the slider when the speed actually changed, so a state
         # update mid-command cannot snap a slider the user is dragging.
         self._shown_speed: int | None = None
+        # IP is a lease, MAC is the identity. Learned from a scan, then used
+        # to re-locate the same BMC after DHCP moves it.
+        self.remembered_mac: str | None = None
 
         self.host_var = tk.StringVar(value=defaults.host)
         self.user_var = tk.StringVar(value=defaults.username)
@@ -1198,7 +1284,20 @@ class FanConsole(ctk.CTk):
         self.gauge.set_value(percent)
 
     def _test_connection(self) -> None:
+        self._relocate_by_mac()
         self.controller.test_connection(on_success=self._connection_ok)
+
+    def _relocate_by_mac(self) -> None:
+        """Follow the remembered MAC if the address it used to hold has moved."""
+        if not self.remembered_mac:
+            return
+        current = discovery.address_for_mac(
+            discovery.read_arp_table(), self.remembered_mac
+        )
+        if current and current != self.host_var.get().strip():
+            self._append_log("SYSTEM", f"iDRAC 地址已变为 {current}，按 MAC 重新定位。")
+            self.host_var.set(current)
+            self._refresh_connection_summary()
 
     def _connection_ok(self, _result: CommandResult) -> None:
         chip, tone = presenters.connection_chip(True, online=True)

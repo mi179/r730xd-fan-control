@@ -27,5 +27,7 @@
 | T-023 | 抽出 `r730xd_core/`：协议常量、SDR 解析分类、输出脱敏三块两端共用；不合并 runner | **Done 2026-08-19**（D-027, E-039） | D-027, E-039 |
 | T-024 | 把 `webapp/tests/` 里的 4 个非测试脚本（`live_smoke` / `live_idrac_readonly` / `inspect_idrac_network` / `dev_preview`）挪到 `tools/live/`。现在拦着 `live_smoke.py` 不被 CI 对真机执行的只是一个 `-p "test_*.py"` 参数，一个文件名就能捅穿 | Open；顺带可关闭 T-006 | E-016 |
 | T-025 | 桌面 `ui.py` 拆成 `view/cards.py` + `dialogs.py` + `window.py` | Open；纯文件分割，随时可做，刻意排在 core 抽取之后以免文件搬两次家 | D-025 |
+| T-026 | 桌面版补 iDRAC 自动发现（扫描 + 按 MAC 重定位），消除与 Web 版的功能差 | **Done 2026-08-19**（D-028, E-040） | D-028, E-040 |
+| T-027 | `HANDOFF.md:27` 与 `EVIDENCE.md:41` 里写有业主真实 iDRAC MAC，且已推送到公开仓库。MAC 不是凭据、且只在同网段有意义，风险低，但属于环境标识不该进仓库（`.env.example` 用占位符是对的）。D-028 之后任何人都能自己扫描发现，仓库里已无保留必要 | Open；改写历史代价高，建议只做"往后不再新增"，由业主决定是否清理 | D-028 |
 
 关闭任务时把状态改为 Done + 日期，不删除行。
