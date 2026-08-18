@@ -16,6 +16,39 @@ powershell -ExecutionPolicy Bypass -File .\Install-R730xdFan-Web.ps1
 收集网络参数、隐藏输入 iDRAC 密码，完成镜像校验、专网、防火墙、健康检查与备份。
 以下章节主要用于源码开发和手动部署。
 
+## 自己升级：一条命令
+
+维护者升级自己那台 WRT 不需要走离线包。离线包是给**从网上拿到它的人**用的——所以
+才有预构建镜像和 SHA-256 清单。自己升级时源码就在手边，走这条：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\deploy_wrt.ps1
+```
+
+它把 webapp 源码（约 66 KB，不含镜像）传到 WRT，在 WRT 上 `docker build`，然后用
+`install.sh --use-local-image` 安装，最后清理 `/tmp`。
+
+对比之前的流程：镜像在 WRT 上构建 → `docker save` → scp 23 MB 回 Windows → 打包
+→ scp 23 MB 回同一台 WRT → `docker load`。**同一个镜像在局域网上来回跑两趟**，
+纯粹因为「离线包是交付单元」。现在它根本不动。
+
+常用参数：`-Reconfigure`（重新填网络参数）、`-RotateSessionKey`、`-WrtHost` /
+`-WrtUser`、`-StageOnly`（只打包不连机器，用来检查要传什么）。
+
+安全边界没有放松：备份、失败自动回滚、防火墙独立区、密码不进 argv 全部不变。
+少掉的只有「校验一个你自己三分钟前打的包」这一步——没有 `SHA256SUMS` 时安装器会
+明确警告，且只允许配合 `--use-local-image`。
+
+## 升级不再逐项提问
+
+`install.sh` 检测到已有 `.env` 就直接沿用里面的值，不再问那 7 个网络参数——升级时
+一路回车既不能发现错误，反而是打错字的来源。要改配置加 `--reconfigure`。首次安装
+仍然逐项询问。
+
+安装成功前会自动跑一遍 `verify.sh`（它检查容器 MAC、ARP 只读挂载、网络挂载关系和
+`.env` 逐键比对，这些 `install.sh` 自己不查）。**验证不过就走回滚**，不会把一个坏
+的安装交付成「完成」。
+
 ## 快速遥测
 
 - 主页面无需登录，局域网设备可直接查看温度、风扇转速、功耗、最近 5 分钟趋势与最近三次采样；后端最多保留 90 条内存样本。

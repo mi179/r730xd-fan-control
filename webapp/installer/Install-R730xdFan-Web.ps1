@@ -63,6 +63,14 @@ Write-Host "[R730XD] Archive SHA256 verified; starting the remote installer"
 & ssh -t $target "tar -xzf '$remoteArchive' -C '$remoteRoot' && sh '$remoteRoot/$packageDirectory/install.sh' $installerArgumentText"
 if ($LASTEXITCODE -ne 0) { throw "Remote installation failed. The installer attempted an automatic rollback." }
 
+# /tmp on OpenWrt is tmpfs, so a leftover bundle costs RAM, not disk. Eight of
+# them had accumulated to 205 MB before this cleanup existed (E-035).
+Write-Host "[R730XD] Removing the uploaded package from the router tmpfs"
+& ssh $target "rm -rf '$remoteRoot'"
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "Could not remove $remoteRoot on $target; it will clear on reboot."
+}
+
 Write-Host ""
 Write-Host "[R730XD] Installation finished. Use the Web URL printed by the remote installer above."
-Write-Host "[R730XD] The uploaded package remains under $remoteRoot until reboot (/tmp is volatile)."
+Write-Host "[R730XD] Post-install verification ran on the router as part of the installer."

@@ -19,6 +19,12 @@ MARKER_NAME=".r730xd-fan-managed"
 LOCK_FILE="/tmp/r730xd-fan-install.lock"
 
 NONINTERACTIVE=0
+# Value prompts are separate from --non-interactive: an upgrade already has
+# every answer in the old .env, but a missing secret must still be able to
+# prompt for a password.
+PROMPT_VALUES=1
+RECONFIGURE=0
+USE_LOCAL_IMAGE=0
 ROTATE_SECRET=0
 ROTATE_SESSION_KEY=0
 PASSWORD_FILE=""
@@ -54,6 +60,11 @@ usage() {
 Usage: sh install.sh [options]
 
   --non-interactive       Use environment/existing/default values without prompts
+  --reconfigure           Ask for the network values again on an upgrade
+  --use-local-image       Use r730xd-fan-web:<version> already present in the
+                          local Docker, instead of loading images/*.tar.gz.
+                          For building on the target host; the released
+                          offline bundle does not need it.
   --password-file FILE    Read a new iDRAC password from FILE (never from argv)
   --rotate-secret         Replace an existing iDRAC password (prompts if no file)
   --rotate-session-key    Generate a new Web session key and invalidate old sessions
@@ -69,6 +80,13 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --non-interactive)
             NONINTERACTIVE=1
+            PROMPT_VALUES=0
+            ;;
+        --reconfigure)
+            RECONFIGURE=1
+            ;;
+        --use-local-image)
+            USE_LOCAL_IMAGE=1
             ;;
         --password-file)
             [ "$#" -ge 2 ] || die "--password-file requires a path"
@@ -212,9 +230,26 @@ esac
 docker info >/dev/null 2>&1 || die "Docker daemon is not available"
 docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required"
 [ -r /proc/1/net/arp ] || die "/proc/1/net/arp is not readable"
-[ -f "$IMAGE_ARCHIVE" ] || die "missing image archive: $IMAGE_ARCHIVE_REL"
-[ -f "$BUNDLE_DIR/SHA256SUMS" ] || die "missing SHA256SUMS"
-(cd "$BUNDLE_DIR" && sha256sum -c SHA256SUMS >/dev/null) || die "bundle checksum verification failed"
+if [ "$USE_LOCAL_IMAGE" -eq 1 ]; then
+    docker image inspect "$IMAGE_NAME" >/dev/null 2>&1 \
+        || die "--use-local-image needs $IMAGE_NAME in the local Docker; build it first"
+    [ ! -f "$IMAGE_ARCHIVE" ] \
+        || warn "images/ is present but --use-local-image was given; the archive is ignored"
+else
+    [ -f "$IMAGE_ARCHIVE" ] || die "missing image archive: $IMAGE_ARCHIVE_REL"
+fi
+
+# A packaged bundle travelled over the network and must prove it is intact.
+# A source checkout on the target host did not, and has no manifest to check;
+# that path is only allowed together with --use-local-image, and it says so.
+if [ -f "$BUNDLE_DIR/SHA256SUMS" ]; then
+    (cd "$BUNDLE_DIR" && sha256sum -c SHA256SUMS >/dev/null) \
+        || die "bundle checksum verification failed"
+elif [ "$USE_LOCAL_IMAGE" -eq 1 ]; then
+    warn "no SHA256SUMS: running from an unpackaged source tree, integrity is not verified"
+else
+    die "missing SHA256SUMS"
+fi
 
 available_kb=$(df -Pk /opt 2>/dev/null | awk 'NR == 2 { print $4 }')
 case "$available_kb" in
@@ -232,7 +267,7 @@ env_value() {
 ask_value() {
     label=$1
     default_value=$2
-    if [ "$NONINTERACTIVE" -eq 1 ]; then
+    if [ "$PROMPT_VALUES" -eq 0 ]; then
         printf '%s' "$default_value"
         return 0
     fi
@@ -280,6 +315,13 @@ default_cidr=$(env_value IDRAC_DISCOVERY_CIDR "$OLD_ENV"); [ -n "$default_cidr" 
 default_interface=$(env_value IDRAC_ARP_INTERFACE "$OLD_ENV"); [ -n "$default_interface" ] || default_interface="br-lan"
 default_user=$(env_value IDRAC_USER "$OLD_ENV"); [ -n "$default_user" ] || default_user="root"
 default_container_mac=$(env_value WEB_CONTAINER_MAC "$OLD_ENV"); [ -n "$default_container_mac" ] || default_container_mac="02:73:0d:73:00:01"
+
+# An upgrade already answered all of these; re-typing them is where mistakes
+# come from, not where they get caught. Use --reconfigure to change them.
+if [ -f "$OLD_ENV" ] && [ "$RECONFIGURE" -eq 0 ] && [ "$PROMPT_VALUES" -eq 1 ]; then
+    PROMPT_VALUES=0
+    log "existing install detected; reusing .env values (pass --reconfigure to change them)"
+fi
 
 WEB_BIND_ADDRESS=${WEB_BIND_ADDRESS:-$(ask_value "WRT LAN address" "$default_bind")}
 WEB_PORT=${WEB_PORT:-$(ask_value "Web port" "$default_port")}
@@ -402,8 +444,12 @@ elif [ "$EXISTING_INSTALL" -eq 1 ] && docker image inspect "$IMAGE_NAME" >/dev/n
 fi
 
 STAGE="image-load"
-log "loading verified offline image"
-gzip -dc "$IMAGE_ARCHIVE" | docker load >/dev/null
+if [ "$USE_LOCAL_IMAGE" -eq 1 ]; then
+    log "using $IMAGE_NAME already present locally; no archive is loaded"
+else
+    log "loading verified offline image"
+    gzip -dc "$IMAGE_ARCHIVE" | docker load >/dev/null
+fi
 docker image inspect "$IMAGE_NAME" >/dev/null 2>&1 || die "loaded image $IMAGE_NAME is missing"
 image_arch=$(docker image inspect -f '{{.Architecture}}' "$IMAGE_NAME")
 image_os=$(docker image inspect -f '{{.Os}}' "$IMAGE_NAME")
@@ -597,6 +643,17 @@ network=$NETWORK_NAME
 EOF
 chmod 600 "$MARKER_FILE"
 if [ "$EXISTING_INSTALL" -eq 0 ]; then CREATED_MARKER=1; fi
+
+STAGE="verify"
+# verify.sh checks things this script does not: container MAC, the read-only
+# ARP mount, network attachments and every .env key. Running it here means a
+# broken install rolls back instead of being handed over as "done".
+if [ -f "$APP_DIR/verify.sh" ]; then
+    sh "$APP_DIR/verify.sh" >/dev/null || die "post-install verification failed"
+    log "verification passed"
+else
+    warn "verify.sh is missing; post-install verification was skipped"
+fi
 
 SUCCESS=1
 log "installation complete"
