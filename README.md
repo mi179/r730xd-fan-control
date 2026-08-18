@@ -99,6 +99,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
 
 ## 一体版自动依赖安装
 
+> 面向使用者的完整操作说明（连接、调速、传感器、故障排查、卸载）见
+> [docs/DESKTOP-USAGE.md](docs/DESKTOP-USAGE.md)。本节只讲依赖是怎么装上的。
+
 `R730xdFanConsole-AllInOne-v0.4.0.exe` 本身就是完整调速程序，并内嵌 Dell 官方签名的
 `BMC.msi`：
 
