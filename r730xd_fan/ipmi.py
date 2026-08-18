@@ -10,6 +10,11 @@ from pathlib import Path
 
 from .config import IpmiSettings
 
+# Mirrors webapp/app.py: command output is redacted and length-capped at the
+# source, so nothing downstream - event log, sensor window, parsers - can ever
+# be handed the secret or an unbounded blob.
+SAFE_OUTPUT_LIMIT = 512 * 1024
+
 MANUAL_MODE_RAW = ("0x30", "0x30", "0x01", "0x00")
 AUTO_MODE_RAW = ("0x30", "0x30", "0x01", "0x01")
 
@@ -147,6 +152,16 @@ def summarize_key_readings(readings: list[SensorReading]) -> tuple[KeyReading, .
     )
 
 
+def redact_and_limit(value: str, password: str) -> str:
+    if password:
+        value = value.replace(password, "[REDACTED]")
+    return value[:SAFE_OUTPUT_LIMIT].strip()
+
+
+def safe_exception(exc: Exception, password: str) -> str:
+    return redact_and_limit(str(exc), password)[:300] or "未知错误"
+
+
 def manual_mode_request() -> IpmiRequest:
     return raw_request("关闭自动温控", MANUAL_MODE_RAW)
 
@@ -257,8 +272,8 @@ def execute(settings: IpmiSettings, request: IpmiRequest) -> CommandResult:
     return CommandResult(
         request=request,
         returncode=completed.returncode,
-        stdout=completed.stdout.strip(),
-        stderr=completed.stderr.strip(),
+        stdout=redact_and_limit(completed.stdout or "", settings.password),
+        stderr=redact_and_limit(completed.stderr or "", settings.password),
         elapsed_seconds=time.perf_counter() - started,
     )
 

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import subprocess
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from r730xd_fan.config import IpmiSettings
 from r730xd_fan.ipmi import (
     auto_mode_request,
     build_command,
+    connection_test_request,
+    execute,
     manual_mode_request,
     parse_sensor_output,
+    redact_and_limit,
     sensor_snapshot_request,
     speed_request,
     summarize_key_readings,
@@ -117,6 +122,43 @@ class KeyReadingTests(unittest.TestCase):
         self.assertEqual(cards[0].value, "23")
         self.assertEqual(cards[1].value, "--")
         self.assertEqual(cards[2].value, "--")
+
+
+class RedactionTests(unittest.TestCase):
+    """The password must not survive into anything a human can read.
+
+    Mirrors _redact_and_limit in webapp/app.py, applied at the same place:
+    where subprocess output enters the program.
+    """
+
+    SECRET = "hunter2-idrac"
+
+    def test_execute_redacts_command_output(self) -> None:
+        settings = IpmiSettings(
+            host="198.51.100.5",
+            username="root",
+            password=self.SECRET,
+            executable=Path("ipmitool.exe"),
+        )
+        completed = subprocess.CompletedProcess(
+            args=["ipmitool"],
+            returncode=0,
+            stdout=f"opened session for root/{self.SECRET}\n",
+            stderr=f"retrying with {self.SECRET}\n",
+        )
+        with patch("r730xd_fan.ipmi.subprocess.run", return_value=completed):
+            result = execute(settings, connection_test_request())
+
+        self.assertNotIn(self.SECRET, result.stdout)
+        self.assertNotIn(self.SECRET, result.stderr)
+        self.assertIn("[REDACTED]", result.stdout)
+
+    def test_output_is_length_capped(self) -> None:
+        capped = redact_and_limit("x" * (600 * 1024), "")
+        self.assertLessEqual(len(capped), 512 * 1024)
+
+    def test_empty_password_leaves_output_untouched(self) -> None:
+        self.assertEqual(redact_and_limit("  plain text  ", ""), "plain text")
 
 
 if __name__ == "__main__":
