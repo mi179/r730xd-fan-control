@@ -16,7 +16,7 @@
 
 ## The one-line version
 
-**Windows GUI v0.4.0 和 OpenWrt Docker Web 版 v0.4.1 都已发布可用**；Web 版跑在
+**Windows GUI v0.4.1 和 OpenWrt Docker Web 版 v0.4.1 都已发布可用**；Web 版跑在
 `192.168.5.2:8088`（E-033）。两条产品线各自独立版本（D-013）。CI（T-002）与版本号
 策略（T-003）已于 2026-07-28 完成。
 

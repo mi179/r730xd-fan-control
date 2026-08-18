@@ -74,7 +74,7 @@ code .
 如果需要重新生成可直接双击的 Windows 程序，运行任务 `Build: Windows EXE`。输出位置：
 
 ```text
-dist\R730xdFanConsole-AllInOne-v0.4.0.exe
+dist\R730xdFanConsole-AllInOne-v0.4.1.exe
 ```
 
 也可以直接执行：
@@ -102,7 +102,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
 > 面向使用者的完整操作说明（连接、调速、传感器、故障排查、卸载）见
 > [docs/DESKTOP-USAGE.md](docs/DESKTOP-USAGE.md)。本节只讲依赖是怎么装上的。
 
-`R730xdFanConsole-AllInOne-v0.4.0.exe` 本身就是完整调速程序，并内嵌 Dell 官方签名的
+`R730xdFanConsole-AllInOne-v0.4.1.exe` 本身就是完整调速程序，并内嵌 Dell 官方签名的
 `BMC.msi`：
 
 1. 每次启动先检测 `ipmitool.exe`。

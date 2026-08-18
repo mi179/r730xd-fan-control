@@ -51,3 +51,4 @@
 | 资料 | 位置 | 说明 |
 |---|---|---|
 | Dell R730xd 官方手册 PDF | `D:\UserData\Documents\r730xd-ompublication-zh-cn.pdf` | 厂商原始文档，摘要不能替代原文 |
+| E-036 | **桌面产物与源码漂移**：`dist/R730xdFanConsole-AllInOne-v0.4.0.exe` 构建于 2026-07-14 17:17，而 `r730xd_fan/ui.py` 最后改动是 2026-08-15 的 `6a39293`（D-014 近黑单色重做）；`pyproject.toml` 的 `version` 自首次提交 `5dfc96e` 起恒为 0.4.0，从未 bump。即产物里没有新 UI，版本号却与源码完全相同，外部无法分辨。按 D-024 重建：**新产物 `dist/R730xdFanConsole-AllInOne-v0.4.1.exe` 21,741,984 B SHA-256 `9B01A3C11B1AE9929651C2E3A3C17CB779FA96A7453E8F3A181C4B9453959169`**（旧 v0.4.0 为 15,222,718 B，见 E-004）。构建前置：15 个桌面 unittest OK、`ruff check .` 通过；`build_windows.ps1` 已校验 `C:\OpenManage\BMC.msi` 的 SHA-256 与 Authenticode 签名有效。启动烟测：进程存活超过 10 s 未自行退出，随后主动结束（功能验收仍需人工双击操作一遍） | `git log -1 -- r730xd_fan/ui.py`、`git log -p -- pyproject.toml`、`dist/` 文件时间戳、`build_windows.ps1` 输出 `BUILD_OK ... 21741984 bytes`、`Get-FileHash`，2026-08-19 实测 | 2026-08-19 |

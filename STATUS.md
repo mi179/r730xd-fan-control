@@ -1,10 +1,10 @@
 # STATUS
 
-Last updated: 2026-08-16（Web v0.4.1 上线 + 功耗统计修正）
+Last updated: 2026-08-19（桌面 EXE 重建为 v0.4.1，与 Web 对齐；CI 恢复绿色）
 
 ## Where we are
 
-**两种交付形态均已发布可用。** 桌面一体版 `R730xdFanConsole-AllInOne-v0.4.0.exe`
+**两种交付形态均已发布可用。** 桌面一体版 `R730xdFanConsole-AllInOne-v0.4.1.exe`
 已构建（内嵌 BMC.msi 自动安装）；Web v0.4.1 已于 2026-08-16 通过正式离线 installer
 部署到 WRT（`root@192.168.5.2`），访问地址 `http://192.168.5.2:8088`。新镜像、
 离线包和 SHA-256 均在 `dist/docker/`，详见 E-033。本地提交已 push 到 origin/main；
@@ -16,8 +16,8 @@ tag 与 GitHub Release 仍未发布（T-018）。
 
 | 组成部分 | 状态 |
 |---|---|
-| Windows GUI（`r730xd_fan/` + `main.py`） | 完成，v0.4.0 |
-| 一体 EXE（含 BMC 自动安装） | 已构建，本地 dist，哈希见 E-004 |
+| Windows GUI（`r730xd_fan/` + `main.py`） | 完成，v0.4.1（近黑单色 UI 已进产物，D-024） |
+| 一体 EXE（含 BMC 自动安装） | v0.4.1 于 2026-08-19 重建，含近黑单色 UI；哈希见 E-036。此前 dist 里是 07-14 的旧产物（D-024） |
 | Web 版（`webapp/`） | v0.4.1 已部署到 WRT；常规遥测与控制可用。完整 SDR 只能返回带标记的部分结果（E-031，T-014）；功耗平均/最小/最大改由本地样本统计（D-023，E-032） |
 | Docker 离线安装包 | v0.4.1 已构建并用于 WRT 部署（E-033）；GitHub Releases 仍只有 v0.3.1（T-018） |
 | 测试 | 两套 unittest 存在（E-016），CI 于 2026-07-28 建立（E-017） |
@@ -67,8 +67,11 @@ tag 与 GitHub Release 仍未发布（T-018）。
 - **~~无 CI~~ → 已关闭 2026-07-28**：`.github/workflows/ci.yml` 三个 job（ruff+治理自检 /
   windows 桌面测试 / ubuntu Web 测试）首次运行全部 success，windows runner 无头会话下
   GUI 测试正常（T-002, E-017）。
-- **~~版本漂移~~ → 已关闭 2026-07-28**：D-013 确立双产品线独立版本 + 单一事实来源 +
-  `desktop-v*`/`web-v*` tag 规范；bundle 脚本对 payload 硬编码副本做一致性断言（E-018）。
+- **版本漂移 → 换了一种形态**：D-013 关掉的是**两条产品线之间**的漂移（独立版本 + 单一事实来源
+  + `desktop-v*`/`web-v*` tag，bundle 脚本对 payload 硬编码副本做一致性断言，E-018）。2026-08-19
+  发现它没覆盖**源码与已构建产物之间**的漂移：桌面源码改过两次，dist 里仍是旧 EXE，版本号一模一样
+  （E-036）。已按 D-024 重建为 v0.4.1，但**没有任何机制阻止它再次发生**——桌面线没有「产物是否落后于
+  源码」的自动检查，Web 线因为每次部署都重新构建才没暴露这个问题。
 - **完整 SDR `SIGSEGV` → 部分缓解，未关闭**：D-022 让真机崩溃前的 83 条有效记录可用，
   并严格标为 partial；T-014 仍需解决真正完整读取和 session 泄漏。常规 Redfish 遥测与
   风扇 `raw` 控制不走完整遍历，不受影响（E-031）。
