@@ -51,6 +51,27 @@ MODE_MANUAL = "manual"
 MODE_AUTO = "auto"
 
 
+# Layout breakpoints, in logical pixels - the same units as geometry() and
+# every widget size in the view. Kept here rather than in the window because
+# they are a judgement about what is worth showing at each size, and because a
+# pure function can be checked without a display.
+LAYOUT_WIDE = 1080
+LAYOUT_MEDIUM = 790
+LAYOUT_SHORT = 760
+
+
+def layout_for(width: int, height: int) -> tuple[int, bool, bool]:
+    """(reading-card columns, side-by-side panels, collapsed log)."""
+    if width >= LAYOUT_WIDE:
+        columns, side_by_side = 4, True
+    elif width >= LAYOUT_MEDIUM:
+        columns, side_by_side = 2, True
+    else:
+        # Too narrow for two panels abreast; stack them instead.
+        columns, side_by_side = 2, False
+    return columns, side_by_side, height < LAYOUT_SHORT
+
+
 def connection_status(configured: bool) -> tuple[str, str]:
     """Status shown on the primary window. Never includes host, user or secret."""
     return ("就绪", "ok") if configured else ("需要配置", "warn")

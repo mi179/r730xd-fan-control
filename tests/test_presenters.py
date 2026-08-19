@@ -31,6 +31,40 @@ class GaugeThresholdTests(unittest.TestCase):
             self.assertRegex(text, r"^#[0-9A-Fa-f]{6}$")
 
 
+class LayoutBreakpointTests(unittest.TestCase):
+    """Where the layout changes shape, checked without a window.
+
+    These are logical pixels. winfo_* reports physical ones, and on a scaled
+    display comparing the wrong pair pins the layout to its widest form and
+    makes collapsing dead code - a bug no screenshot on an unscaled monitor
+    would reveal.
+    """
+
+    def test_the_three_shapes(self) -> None:
+        self.assertEqual(presenters.layout_for(1180, 940), (4, True, False))
+        self.assertEqual(presenters.layout_for(900, 800), (2, True, False))
+        self.assertEqual(presenters.layout_for(600, 700), (2, False, True))
+
+    def test_width_boundaries(self) -> None:
+        self.assertEqual(presenters.layout_for(1080, 900)[:2], (4, True))
+        self.assertEqual(presenters.layout_for(1079, 900)[:2], (2, True))
+        self.assertEqual(presenters.layout_for(790, 900)[:2], (2, True))
+        self.assertEqual(presenters.layout_for(789, 900)[:2], (2, False))
+
+    def test_height_only_affects_the_log(self) -> None:
+        self.assertFalse(presenters.layout_for(1180, 760)[2])
+        self.assertTrue(presenters.layout_for(1180, 759)[2])
+        self.assertEqual(
+            presenters.layout_for(1180, 759)[:2], presenters.layout_for(1180, 940)[:2]
+        )
+
+    def test_collapsing_is_reversible(self) -> None:
+        """Growing back must return the exact wide shape, not a near miss."""
+        wide = presenters.layout_for(1180, 940)
+        presenters.layout_for(600, 660)
+        self.assertEqual(presenters.layout_for(1180, 940), wide)
+
+
 class ConnectionStatusTests(unittest.TestCase):
     def test_status_is_derived_not_descriptive(self) -> None:
         """The primary window must never surface host, user or secret."""

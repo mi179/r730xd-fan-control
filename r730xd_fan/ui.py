@@ -963,14 +963,8 @@ class FanConsole(ctk.CTk):
         height = round(self.winfo_height() / scaling)
         if width <= 1 or height <= 1:
             return
-        if width >= 1080:
-            columns, side_by_side = 4, True
-        elif width >= 790:
-            columns, side_by_side = 2, True
-        else:
-            columns, side_by_side = 2, False
-        compact_log = height < 760
-        key = (columns, side_by_side, compact_log)
+        key = presenters.layout_for(width, height)
+        columns, side_by_side, compact_log = key
         # Configure fires constantly during a drag; only act on a real change.
         if key == self._layout_key:
             return

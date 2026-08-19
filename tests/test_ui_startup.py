@@ -277,29 +277,38 @@ class UiStartupTests(unittest.TestCase):
         finally:
             app.destroy()
 
-    def _sized(self, app, width: int, height: int):
-        """Resize in logical units and let the layout settle."""
-        app.geometry(f"{width}x{height}+20+10")
-        for _ in range(30):
-            app.update()
-        return app._layout_key
+    def _laid_out(self, app, width: int, height: int):
+        """Apply the layout for a size without asking the window to become it.
+
+        A geometry() request is a request: a session that does not honour it
+        leaves the window at whatever size it likes, and an assertion about the
+        resulting layout then fails for reasons unrelated to the layout code.
+        The breakpoint decision itself is a pure function, tested separately in
+        test_presenters.py.
+        """
+        from r730xd_fan import presenters
+
+        key = presenters.layout_for(width, height)
+        app._layout_key = key
+        app._apply_layout(*key)
+        app.update_idletasks()
+        return key
 
     def test_layout_collapses_as_the_window_shrinks(self) -> None:
-        """Auto-collapse, asserted structurally rather than by eye.
-
-        The breakpoints are in logical pixels while winfo_* reports physical
-        ones; on a scaled display those differ, and comparing the wrong pair
-        pins the layout to its widest form forever. That bug is invisible in a
-        screenshot taken on an unscaled monitor, so it is pinned here instead.
-        """
+        """Auto-collapse, asserted structurally rather than by eye."""
         from r730xd_fan.ui import FanConsole
 
         app = FanConsole(startup_message="layout test")
         try:
             app.attributes("-alpha", 0.0)
             app.deiconify()
+            # Stop the live handler from re-deciding from the real window size
+            # and undoing what this test just applied. Without this the test
+            # fights itself, and does so differently depending on whether the
+            # session honoured geometry() at all.
+            app.unbind("<Configure>")
 
-            self.assertEqual(self._sized(app, 1180, 940), (4, True, False))
+            self.assertEqual(self._laid_out(app, 1180, 940), (4, True, False))
             cards = [card.grid_info() for card in app.reading_cards]
             self.assertEqual([int(item["row"]) for item in cards], [0, 0, 0, 0])
             self.assertEqual([int(item["column"]) for item in cards], [0, 1, 2, 3])
@@ -309,12 +318,12 @@ class UiStartupTests(unittest.TestCase):
                 "wide layout should put the two panels side by side",
             )
 
-            self.assertEqual(self._sized(app, 900, 800), (2, True, False))
+            self.assertEqual(self._laid_out(app, 900, 800), (2, True, False))
             cards = [card.grid_info() for card in app.reading_cards]
             self.assertEqual([int(item["row"]) for item in cards], [0, 0, 1, 1])
             self.assertEqual([int(item["column"]) for item in cards], [0, 1, 0, 1])
 
-            self.assertEqual(self._sized(app, 600, 660), (2, False, True))
+            self.assertEqual(self._laid_out(app, 600, 660), (2, False, True))
             self.assertNotEqual(
                 app.left_scroll.grid_info()["row"],
                 app.right_panel.grid_info()["row"],
@@ -328,7 +337,7 @@ class UiStartupTests(unittest.TestCase):
             )
 
             # And back again: collapsing must be reversible, not one-way.
-            self.assertEqual(self._sized(app, 1180, 940), (4, True, False))
+            self.assertEqual(self._laid_out(app, 1180, 940), (4, True, False))
             self.assertTrue(app.log.winfo_ismapped())
         finally:
             app.destroy()
