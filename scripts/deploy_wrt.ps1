@@ -39,7 +39,8 @@ if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid installer VERSION: $v
 $consistencyChecks = @(
     @{ File = "install.sh"; Pattern = "(?m)^APP_VERSION=`"$version`"$" },
     @{ File = "verify.sh"; Pattern = "(?m)^EXPECTED_IMAGE=`"r730xd-fan-web:$version`"$" },
-    @{ File = "compose.offline.yaml"; Pattern = "(?m)^\s+image: r730xd-fan-web:$version\s*$" }
+    @{ File = "compose.offline.yaml"; Pattern = "(?m)^\s+image: r730xd-fan-web:$version\s*$" },
+    @{ File = "README.txt"; Pattern = "(?m)^R730xd Fan Web $version " }
 )
 foreach ($check in $consistencyChecks) {
     $payload = Get-Content -Raw -LiteralPath (Join-Path $installerRoot $check.File)
