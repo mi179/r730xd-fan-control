@@ -105,6 +105,16 @@ def _first_named(candidates: list[SensorReading], *needles: str) -> SensorReadin
     return None
 
 
+def _first_processor_temp(candidates: list[SensorReading]) -> SensorReading | None:
+    """Dell labels CPU diode temperatures simply ``Temp`` with a processor
+    entity (3.x). Borrow only that: a DIMM or drive temperature must never
+    appear under the CPU label (D-025)."""
+    for reading in candidates:
+        if reading.name.strip().casefold() == "temp" and reading.entity.startswith("3."):
+            return reading
+    return None
+
+
 def summarize_key_readings(readings: list[SensorReading]) -> tuple[KeyReading, ...]:
     """Pick the four headline values out of a full ``sdr elist all`` snapshot.
 
@@ -122,7 +132,7 @@ def summarize_key_readings(readings: list[SensorReading]) -> tuple[KeyReading, .
     exhaust = _first_named(temperatures, "exhaust")
     taken = {id(item) for item in (inlet, exhaust) if item is not None}
     remaining = [item for item in temperatures if id(item) not in taken]
-    cpu = _first_named(remaining, "cpu") or (remaining[0] if remaining else None)
+    cpu = _first_named(remaining, "cpu") or _first_processor_temp(remaining)
 
     power = next(
         (
