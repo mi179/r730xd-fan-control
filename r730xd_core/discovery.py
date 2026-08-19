@@ -30,6 +30,13 @@ from dataclasses import dataclass
 
 RMCP_PORT = 623
 
+# How many addresses one sweep may cover. 512 lets a /24 and a /23 both be
+# scanned in full - a /23 is an ordinary small-office LAN, and narrowing it
+# to half could leave the BMC in the half that was skipped. The cap is here
+# to stop a /16 becoming 65k probes, not to shave a few hundred packets that
+# a LAN answers instantly.
+MAX_SCAN_HOSTS = 512
+
 # An ASF RMCP presence ping: version 6, no sequence, class ASF, then the ASF
 # header with the IANA enterprise number and the "presence ping" message type.
 _PRESENCE_PREFIX = bytes.fromhex("06 00 ff 06 00 00 11 be 80")
@@ -96,24 +103,132 @@ def read_arp_table() -> str:
         return ""
 
 
-def local_network(prefix: int = 24) -> str | None:
-    """The /24 this machine sits on, without sending anything.
+def local_address() -> str | None:
+    """This host's source address for outbound traffic, without sending anything.
 
     Connecting a UDP socket only picks a route and a source address; no packet
-    leaves. Used to default the scan range so the user is not asked for a CIDR
-    before they have any idea what theirs is.
+    leaves. On a machine attached to several LANs this is the one that answers
+    "which network am I actually on".
     """
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
             probe.connect(("8.8.8.8", 53))
-            local = probe.getsockname()[0]
+            return str(probe.getsockname()[0])
     except OSError:
         return None
+
+
+def host_addresses() -> list[tuple[str, int]]:
+    """(address, prefix length) for every IPv4 interface, as the OS reports it.
+
+    Read rather than assumed: a /23 or /20 LAN is not exotic, and guessing /24
+    there scans the wrong range and silently finds nothing.
+    """
+    import json
+    import os
+    import subprocess
+
+    found: list[tuple[str, int]] = []
     try:
-        interface = ipaddress.ip_interface(f"{local}/{prefix}")
+        if os.name == "nt":
+            # Get-NetIPAddress rather than ipconfig: the property names are the
+            # same on a Chinese Windows, the parsed text is not.
+            completed = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-NetIPAddress -AddressFamily IPv4 |"
+                    " Select-Object IPAddress,PrefixLength | ConvertTo-Json -Compress",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            payload = json.loads(completed.stdout or "[]")
+            if isinstance(payload, dict):
+                payload = [payload]
+            for item in payload:
+                found.append((str(item["IPAddress"]), int(item["PrefixLength"])))
+        else:
+            completed = subprocess.run(
+                ["ip", "-4", "-o", "addr", "show"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                check=False,
+            )
+            for line in (completed.stdout or "").splitlines():
+                match = re.search(r"\binet\s+(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})\b", line)
+                if match:
+                    found.append((match.group(1), int(match.group(2))))
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return []
+    return found
+
+
+@dataclass(frozen=True, slots=True)
+class ScanRange:
+    network: str
+    address: str
+    prefix: int
+    #: True when the interface's real network was too large to sweep and the
+    #: range was cut down to a /24 around this host.
+    narrowed: bool = False
+    #: True when the OS lookup failed and /24 was assumed.
+    assumed: bool = False
+
+    @property
+    def note(self) -> str:
+        if self.narrowed:
+            return f"本机网段是 /{self.prefix}，太大，只扫本机所在的 /24"
+        if self.assumed:
+            return "读不到子网掩码，按 /24 估算"
+        return ""
+
+
+def scan_range(max_hosts: int = MAX_SCAN_HOSTS) -> ScanRange | None:
+    """Which range to sweep, derived from the OS rather than assumed."""
+    address = local_address()
+    if address is None:
+        return None
+
+    prefix = None
+    for candidate, candidate_prefix in host_addresses():
+        if candidate == address:
+            prefix = candidate_prefix
+            break
+
+    assumed = prefix is None
+    if prefix is None:
+        prefix = 24
+
+    try:
+        network = ipaddress.ip_interface(f"{address}/{prefix}").network
     except ValueError:
         return None
-    return str(interface.network)
+
+    # A /20 LAN is legitimate but 4094 probes is not a thing to do by default.
+    # Falling back to this host's own /24 is a guess, so `narrowed` says so
+    # rather than letting an empty result look like "no BMC here".
+    narrowed = False
+    if network.num_addresses - 2 > max_hosts:
+        narrowed = True
+        network = ipaddress.ip_interface(f"{address}/24").network
+
+    return ScanRange(
+        network=str(network),
+        address=address,
+        prefix=prefix,
+        narrowed=narrowed,
+        assumed=assumed,
+    )
 
 
 def _valid_pong(payload: bytes, peer: tuple, tag: int) -> str | None:
@@ -149,7 +264,7 @@ def probe_rmcp(
     network: str | ipaddress.IPv4Network,
     *,
     timeout: float = 1.5,
-    max_hosts: int = 256,
+    max_hosts: int = MAX_SCAN_HOSTS,
 ) -> list[str]:
     """Addresses that answered an IPMI presence ping. No credentials are sent.
 
@@ -199,7 +314,7 @@ def discover(
     arp_text: str = "",
     *,
     timeout: float = 1.5,
-    max_hosts: int = 256,
+    max_hosts: int = MAX_SCAN_HOSTS,
 ) -> list[Candidate]:
     """Every BMC on the segment, with its MAC filled in where ARP knows it.
 

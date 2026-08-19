@@ -354,36 +354,33 @@ class ConnectionDialog(ctk.CTkToplevel):
 
     def _scan(self) -> None:
         """Find BMCs on this segment. Runs off the UI thread; ~2 s of waiting."""
-        network = discovery.local_network()
-        if network is None:
+        scan = discovery.scan_range()
+        if scan is None:
             self.scan_hint.configure(text="无法判断本机所在网段", text_color=COLORS["amber"])
             return
         self.scan_button.configure(state="disabled", text="扫描中…")
-        self.scan_hint.configure(
-            text=f"正在探测 {network}…", text_color=COLORS["muted"]
-        )
+        hint = f"正在探测 {scan.network}…"
+        if scan.note:
+            hint = f"{hint}（{scan.note}）"
+        self.scan_hint.configure(text=hint, text_color=COLORS["muted"])
 
         def work() -> None:
             try:
-                found = discovery.discover(
-                    network, discovery.read_arp_table(), timeout=2.5
-                )
+                # No ARP table is passed in: before the probe runs, the machine
+                # has never spoken to these hosts and the table cannot know
+                # them. The probe is what creates the entries, so it is read
+                # afterwards.
+                found = discovery.discover(scan.network, timeout=2.5)
+                arp = discovery.parse_arp_pairs(discovery.read_arp_table())
+                by_address = {address: mac for mac, address in arp.items()}
+                resolved = [
+                    discovery.Candidate(item.address, by_address.get(item.address))
+                    for item in found
+                ]
             except Exception as exc:  # boundary: a scan must never kill the dialog
                 message = str(exc)
                 self.after(0, lambda: self._scan_failed(message))
             else:
-                # Re-read ARP: the probe itself is what populates it.
-                arp = discovery.read_arp_table()
-                resolved = [
-                    discovery.Candidate(
-                        item.address,
-                        item.mac
-                        or {ip: mac for mac, ip in discovery.parse_arp_pairs(arp).items()}.get(
-                            item.address
-                        ),
-                    )
-                    for item in found
-                ]
                 self.after(0, lambda: self._scan_done(resolved))
 
         threading.Thread(target=work, name="idrac-scan", daemon=True).start()
