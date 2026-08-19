@@ -277,6 +277,73 @@ class UiStartupTests(unittest.TestCase):
         finally:
             app.destroy()
 
+    def _sized(self, app, width: int, height: int):
+        """Resize in logical units and let the layout settle."""
+        app.geometry(f"{width}x{height}+20+10")
+        for _ in range(30):
+            app.update()
+        return app._layout_key
+
+    def test_layout_collapses_as_the_window_shrinks(self) -> None:
+        """Auto-collapse, asserted structurally rather than by eye.
+
+        The breakpoints are in logical pixels while winfo_* reports physical
+        ones; on a scaled display those differ, and comparing the wrong pair
+        pins the layout to its widest form forever. That bug is invisible in a
+        screenshot taken on an unscaled monitor, so it is pinned here instead.
+        """
+        from r730xd_fan.ui import FanConsole
+
+        app = FanConsole(startup_message="layout test")
+        try:
+            app.attributes("-alpha", 0.0)
+            app.deiconify()
+
+            self.assertEqual(self._sized(app, 1180, 940), (4, True, False))
+            cards = [card.grid_info() for card in app.reading_cards]
+            self.assertEqual([int(item["row"]) for item in cards], [0, 0, 0, 0])
+            self.assertEqual([int(item["column"]) for item in cards], [0, 1, 2, 3])
+            self.assertNotEqual(
+                app.left_scroll.grid_info()["column"],
+                app.right_panel.grid_info()["column"],
+                "wide layout should put the two panels side by side",
+            )
+
+            self.assertEqual(self._sized(app, 900, 800), (2, True, False))
+            cards = [card.grid_info() for card in app.reading_cards]
+            self.assertEqual([int(item["row"]) for item in cards], [0, 0, 1, 1])
+            self.assertEqual([int(item["column"]) for item in cards], [0, 1, 0, 1])
+
+            self.assertEqual(self._sized(app, 600, 660), (2, False, True))
+            self.assertNotEqual(
+                app.left_scroll.grid_info()["row"],
+                app.right_panel.grid_info()["row"],
+                "narrow layout should stack the two panels",
+            )
+            self.assertFalse(
+                app.log.winfo_ismapped(), "the full log should be hidden when short"
+            )
+            self.assertTrue(
+                app.log_summary.winfo_ismapped(), "a one-line summary should replace it"
+            )
+
+            # And back again: collapsing must be reversible, not one-way.
+            self.assertEqual(self._sized(app, 1180, 940), (4, True, False))
+            self.assertTrue(app.log.winfo_ismapped())
+        finally:
+            app.destroy()
+
+    def test_the_collapsed_log_shows_the_latest_line(self) -> None:
+        from r730xd_fan.ui import FanConsole
+
+        app = FanConsole(startup_message="first line")
+        try:
+            app.withdraw()
+            app._append_log("SEND", "后一条")
+            self.assertIn("后一条", app.log_summary.cget("text"))
+        finally:
+            app.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -149,18 +149,19 @@ class FanGauge(ctk.CTkFrame):
             width=arc_width,
             outline=COLORS["line"],
         )
+        # A short arc drawn with a thick butt cap reads as a detached square at
+        # low percentages; a rounded cap keeps it looking like the start of a
+        # sweep. Zero stays genuinely empty.
         extent = 140 * self.value / 100
-        color = COLORS["reading"] if self.value <= 30 else COLORS["amber"]
-        if self.value >= 60:
-            color = COLORS["red"]
-        canvas.create_arc(
-            *box,
-            start=200,
-            extent=extent,
-            style="arc",
-            width=arc_width,
-            outline=color,
-        )
+        if extent > 0:
+            canvas.create_arc(
+                *box,
+                start=200,
+                extent=max(extent, 1.5),
+                style="arc",
+                width=arc_width,
+                outline=theme.tone_color(presenters.gauge_tone(self.value)),
+            )
         center_x, value_y = point(127, 103)
         canvas.create_text(
             center_x,
@@ -710,7 +711,9 @@ class FanConsole(ctk.CTk):
         # The readings row costs about 150 px of height, and the connection card
         # must stay above the fold: it is the first thing a new user needs.
         self.geometry("1180x940")
-        self.minsize(900, 700)
+        # Low enough that the stacked layout is actually reachable. The old
+        # 900x700 floor predated collapsing and silently blocked it.
+        self.minsize(560, 520)
 
         defaults = IpmiSettings.from_environment()
         self.action_buttons: list[ctk.CTkButton] = []
@@ -722,6 +725,7 @@ class FanConsole(ctk.CTk):
         # Only re-sync the slider when the speed actually changed, so a state
         # update mid-command cannot snap a slider the user is dragging.
         self._shown_speed: int | None = None
+        self._layout_key: tuple | None = None
         # IP is a lease, MAC is the identity. Learned from a scan, then used
         # to re-locate the same BMC after DHCP moves it.
         self.remembered_mac: str | None = None
@@ -763,6 +767,8 @@ class FanConsole(ctk.CTk):
         self._append_log("SYSTEM", startup_message or "控制台就绪。先测试连接，再解除安全联锁。")
         self._update_controls()
         self._schedule_poll(first=True)
+        self.bind("<Configure>", self._on_resize)
+        self.after(60, self._on_resize)
 
     # ------------------------------------------------------------------
     # Controller state, exposed read-only for the view, tests and preview.
@@ -867,6 +873,7 @@ class FanConsole(ctk.CTk):
             orientation="vertical",
         )
         self.left_scroll.grid(row=1, column=0, padx=(0, 14), sticky="nsew")
+        self.body = body
         self._build_mode_card(self.left_scroll)
         self._build_connection_card(self.left_scroll)
 
@@ -878,6 +885,7 @@ class FanConsole(ctk.CTk):
             fg_color=COLORS["surface"],
         )
         right.grid(row=1, column=1, sticky="nsew")
+        self.right_panel = right
         self._build_output_card(right)
 
     def _build_readings_row(self, body: ctk.CTkFrame) -> None:
@@ -888,20 +896,15 @@ class FanConsole(ctk.CTk):
         """
         row = ctk.CTkFrame(body, fg_color="transparent")
         row.grid(row=0, column=0, columnspan=2, pady=(0, 14), sticky="ew")
-        for column in range(4):
-            row.grid_columnconfigure(column, weight=1, uniform="readings")
+        self.readings_row = row
 
-        for index, (label, unit) in enumerate(
-            (("进风温度", "°C"), ("排风温度", "°C"), ("CPU 温度", "°C"), ("实时功耗", "W"))
+        for label, unit in (
+            ("进风温度", "°C"),
+            ("排风温度", "°C"),
+            ("CPU 温度", "°C"),
+            ("实时功耗", "W"),
         ):
-            card = ReadingCard(row, label, unit)
-            card.grid(
-                row=0,
-                column=index,
-                padx=(0 if index == 0 else 7, 0 if index == 3 else 7),
-                sticky="ew",
-            )
-            self.reading_cards.append(card)
+            self.reading_cards.append(ReadingCard(row, label, unit))
 
         self.readings_meta = ctk.CTkLabel(
             row,
@@ -910,7 +913,6 @@ class FanConsole(ctk.CTk):
             text_color=COLORS["muted"],
             font=("Microsoft YaHei UI", 9),
         )
-        self.readings_meta.grid(row=1, column=0, columnspan=4, pady=(7, 0), sticky="w")
 
     def apply_sensor_snapshot(self, result: CommandResult) -> None:
         """Feed the readings row from a raw `sdr elist all` result."""
@@ -936,6 +938,88 @@ class FanConsole(ctk.CTk):
         self._poll_job = None
         self.controller.poll_sensors()
         self._schedule_poll()
+
+    # ------------------------------------------------------------------
+    # Auto-collapsing layout. The window reflows itself; there is no manual
+    # toggle, because a fan console that needs to be told it is small is a fan
+    # console you have to think about.
+
+    def _on_resize(self, _event=None) -> None:
+        # winfo_* reports physical pixels, but the breakpoints below are written
+        # in the same logical units as geometry() and every widget size in this
+        # file. On a 150% display the two differ by half again, which silently
+        # pins the layout to its widest form and makes collapsing dead code.
+        try:
+            scaling = ctk.ScalingTracker.get_window_scaling(self) or 1.0
+        except Exception:
+            scaling = 1.0
+        width = round(self.winfo_width() / scaling)
+        height = round(self.winfo_height() / scaling)
+        if width <= 1 or height <= 1:
+            return
+        if width >= 1080:
+            columns, side_by_side = 4, True
+        elif width >= 790:
+            columns, side_by_side = 2, True
+        else:
+            columns, side_by_side = 2, False
+        compact_log = height < 760
+        key = (columns, side_by_side, compact_log)
+        # Configure fires constantly during a drag; only act on a real change.
+        if key == self._layout_key:
+            return
+        self._layout_key = key
+        self._apply_layout(columns, side_by_side, compact_log)
+
+    def _apply_layout(self, columns: int, side_by_side: bool, compact_log: bool) -> None:
+        row = self.readings_row
+        for index in range(4):
+            row.grid_columnconfigure(index, weight=0, uniform="")
+        for index in range(columns):
+            row.grid_columnconfigure(index, weight=1, uniform="readings")
+
+        for index, card in enumerate(self.reading_cards):
+            grid_row, grid_column = divmod(index, columns)
+            first = grid_column == 0
+            last = grid_column == columns - 1
+            card.grid(
+                row=grid_row,
+                column=grid_column,
+                padx=(0 if first else 7, 0 if last else 7),
+                pady=(0 if grid_row == 0 else 10, 0),
+                sticky="ew",
+            )
+        meta_row = (len(self.reading_cards) + columns - 1) // columns
+        self.readings_meta.grid(
+            row=meta_row, column=0, columnspan=columns, pady=(7, 0), sticky="w"
+        )
+
+        body = self.body
+        if side_by_side:
+            body.grid_columnconfigure(0, weight=3, minsize=280)
+            body.grid_columnconfigure(1, weight=7, minsize=0)
+            body.grid_rowconfigure(1, weight=1)
+            body.grid_rowconfigure(2, weight=0)
+            self.left_scroll.grid(row=1, column=0, columnspan=1, padx=(0, 14), sticky="nsew")
+            self.right_panel.grid(row=1, column=1, columnspan=1, pady=0, sticky="nsew")
+        else:
+            # Too narrow to stand side by side: stack, and let the fan output
+            # card take the growth because it holds the gauge.
+            body.grid_columnconfigure(0, weight=1, minsize=0)
+            body.grid_columnconfigure(1, weight=0, minsize=0)
+            body.grid_rowconfigure(1, weight=0)
+            body.grid_rowconfigure(2, weight=1)
+            self.left_scroll.grid(row=1, column=0, columnspan=2, padx=0, sticky="ew")
+            self.right_panel.grid(row=2, column=0, columnspan=2, pady=(14, 0), sticky="nsew")
+
+        if compact_log:
+            self.log.grid_remove()
+            self.log_summary.grid()
+            self.log_panel.configure(height=64)
+        else:
+            self.log_summary.grid_remove()
+            self.log.grid()
+            self.log_panel.configure(height=128)
 
     def _section_label(self, master: ctk.CTkBaseClass, text: str) -> ctk.CTkLabel:
         return ctk.CTkLabel(
@@ -1206,6 +1290,8 @@ class FanConsole(ctk.CTk):
         )
         panel.grid(row=2, column=0, padx=22, pady=(0, 20), sticky="ew")
         panel.grid_columnconfigure(0, weight=1)
+        panel.grid_propagate(False)
+        self.log_panel = panel
         self._section_label(panel, "04 / 事件日志").grid(
             row=0, column=0, padx=18, pady=(12, 5), sticky="w"
         )
@@ -1234,6 +1320,20 @@ class FanConsole(ctk.CTk):
             activate_scrollbars=True,
         )
         self.log.grid(row=1, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="ew")
+
+        # Shown instead of the full log when the window is too short for it:
+        # the most recent line is nearly always the one that matters.
+        self.log_summary = ctk.CTkLabel(
+            panel,
+            text="",
+            anchor="w",
+            text_color=COLORS["log_text"],
+            font=("Cascadia Mono", 10),
+        )
+        self.log_summary.grid(
+            row=1, column=0, columnspan=2, padx=18, pady=(0, 12), sticky="ew"
+        )
+        self.log_summary.grid_remove()
 
     def _settings(self) -> IpmiSettings:
         return IpmiSettings(
@@ -1341,8 +1441,10 @@ class FanConsole(ctk.CTk):
 
     def _append_log(self, level: str, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log.insert("end", f"{timestamp}  [{level:<5}]  {message}\n")
+        line = f"{timestamp}  [{level:<5}]  {message}"
+        self.log.insert("end", line + "\n")
         self.log.see("end")
+        self.log_summary.configure(text=line)
 
 
 def run(startup_message: str | None = None) -> None:
