@@ -88,6 +88,27 @@ def main() -> int:
     if history.returncode != 0 or not history.stdout.strip():
         failures.append("no git history")
 
+    # A built EXE that lags its source is the failure this project has already
+    # had twice: once found a month late (E-036), once again the next day. The
+    # version number does not change, so nothing about the file says it is old.
+    desktop_sources = [
+        path
+        for directory in ("r730xd_fan", "r730xd_core")
+        for path in (REPO_ROOT / directory).rglob("*.py")
+        if "__pycache__" not in path.parts
+    ]
+    main_py = REPO_ROOT / "main.py"
+    if main_py.is_file():
+        desktop_sources.append(main_py)
+    if desktop_sources:
+        newest = max(path.stat().st_mtime for path in desktop_sources)
+        for built in sorted((REPO_ROOT / "dist").glob("*.exe")):
+            if built.stat().st_mtime < newest:
+                failures.append(
+                    f"stale build artefact: {built.name} predates the desktop "
+                    f"sources; rebuild with scripts/build_windows.ps1 or delete it"
+                )
+
     for script in sorted(REPO_ROOT.rglob("*.ps1")):
         if any(part in {".venv-win", ".venv-wsl", "node_modules"} for part in script.parts):
             continue

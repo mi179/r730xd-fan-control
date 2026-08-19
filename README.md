@@ -125,11 +125,16 @@ C:\ProgramData\R730xdFanConsole-<随机标识>\install-bmc.log
 
 默认配置：
 
-- iDRAC：`192.168.5.151`
+- iDRAC 地址：**留空**。写死一个地址在 DHCP 换址后就是错的，而界面会显示成"已配置"
+  然后超时；留空则提示「需要配置」，并在连接设置里提供**扫描局域网找 iDRAC**——
+  它发不含凭据的 IPMI 探测包，找到后记住 MAC 作为稳定身份（D-028）。
 - 用户：`root`
 - ipmitool：`D:\Program Files (x86)\Dell\SysMgt\bmc\ipmitool.exe`
 
-密码需要在 GUI 中输入，也可通过当前进程的 `IPMI_PASSWORD` 环境变量提供。
+密码需要在 GUI 中输入，也可通过当前进程的 `IPMI_PASSWORD` 环境变量提供；
+地址同样可用 `IDRAC_HOST` 预置。
+
+使用者文档见 [docs/DESKTOP-USAGE.md](docs/DESKTOP-USAGE.md)。
 
 ## 测试
 

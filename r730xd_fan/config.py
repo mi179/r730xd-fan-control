@@ -5,7 +5,11 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_HOST = "192.168.5.151"
+# Deliberately empty. A hardcoded address goes stale the first time DHCP moves
+# the BMC, and then the console looks configured and simply times out - which is
+# exactly how this bit its own author. Empty means the window says 需要配置, and
+# the connection dialog offers to scan the LAN for it instead (D-028).
+DEFAULT_HOST = ""
 DEFAULT_USER = "root"
 
 

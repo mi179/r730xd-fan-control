@@ -89,6 +89,28 @@ class ColdStartTests(unittest.TestCase):
         self.assertFalse(controller.busy)
 
 
+class BlankDefaultTests(unittest.TestCase):
+    """No hardcoded address: a stale one looks configured and then times out."""
+
+    def test_the_shipped_default_is_empty(self) -> None:
+        from r730xd_fan.config import DEFAULT_HOST
+
+        self.assertEqual(DEFAULT_HOST, "")
+
+    def test_an_unconfigured_console_sends_nothing(self) -> None:
+        blank = IpmiSettings(executable=Path("ipmitool.exe"))
+        calls: list[IpmiRequest] = []
+
+        controller = FanController(
+            lambda: blank,
+            runner=lambda _s, request: calls.append(request) or ok_result(request),
+            spawn=lambda work: work(),
+            post=lambda fn: fn(),
+        )
+        self.assertFalse(controller.poll_sensors())
+        self.assertEqual(calls, [])
+
+
 class InterlockTests(unittest.TestCase):
     def test_manual_takeover_needs_the_interlock(self) -> None:
         listener = RecordingListener()
