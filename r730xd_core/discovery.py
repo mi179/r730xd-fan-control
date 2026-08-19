@@ -231,7 +231,22 @@ def scan_range(max_hosts: int = MAX_SCAN_HOSTS) -> ScanRange | None:
     )
 
 
-def _valid_pong(payload: bytes, peer: tuple, tag: int) -> str | None:
+def presence_ping(tag: int) -> bytes:
+    """The ASF presence ping carrying a caller-chosen tag.
+
+    Shared so both product lines put the same bytes on the wire; a silent
+    divergence here would mean one of them stops recognising BMCs.
+    """
+    return _PRESENCE_PREFIX + bytes((tag, 0x00, 0x00))
+
+
+def valid_pong(payload: bytes, peer: tuple, tag: int) -> str | None:
+    """The responder's address if this is a well-formed pong for our tag.
+
+    Protocol only. Whether that address is one the caller should trust is
+    policy and stays with the caller - the Web line additionally rejects
+    loopback, link-local, multicast and reserved candidates.
+    """
     if len(peer) < 2 or peer[1] != RMCP_PORT or len(payload) != _PONG_LENGTH:
         return None
     if (
@@ -278,7 +293,7 @@ def probe_rmcp(
         raise ValueError(f"{network} covers {len(hosts)} hosts, over the {max_hosts} cap")
 
     tag = secrets.randbelow(256)
-    ping = _PRESENCE_PREFIX + bytes((tag, 0x00, 0x00))
+    ping = presence_ping(tag)
     responders: list[str] = []
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
@@ -301,7 +316,7 @@ def probe_rmcp(
                     payload, peer = probe.recvfrom(2048)
                 except OSError:
                     continue
-                found = _valid_pong(payload, peer, tag)
+                found = valid_pong(payload, peer, tag)
                 if found and found not in responders:
                     responders.append(found)
     except OSError:

@@ -69,6 +69,81 @@ class BothLinesAgreeTests(unittest.TestCase):
         self.assertEqual(webapp.AUTO_MODE_RAW, protocol.AUTO_MODE_ARGS)
 
 
+class SharedDiscoveryTests(unittest.TestCase):
+    """Both lines must put the same bytes on the wire and accept the same reply.
+
+    The Web line keeps its own socket loop and its own candidate policy (it
+    rejects loopback, link-local, multicast and reserved addresses). What must
+    not diverge is the wire format - a silent difference there means one side
+    quietly stops recognising BMCs.
+    """
+
+    def _pong(self, tag: int) -> bytes:
+        return (
+            b"\x06\x00\xff\x06"
+            + b"\x00\x00\x11\xbe"
+            + bytes((0x40, tag, 0x00, 0x10))
+            + bytes(16)
+        )
+
+    def _webapp(self):
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "webapp"))
+        try:
+            import app as webapp
+        except ImportError:
+            self.skipTest("webapp dependencies are not installed")
+        return webapp
+
+    def test_both_lines_send_the_same_presence_ping(self) -> None:
+        from r730xd_core import discovery
+
+        for tag in (0, 7, 255):
+            self.assertEqual(
+                discovery.presence_ping(tag),
+                bytes.fromhex("06 00 ff 06 00 00 11 be 80") + bytes((tag, 0, 0)),
+            )
+
+    def test_both_lines_accept_the_same_reply(self) -> None:
+        from r730xd_core import discovery
+
+        webapp = self._webapp()
+        peer = ("192.168.5.130", 623)
+        self.assertEqual(
+            discovery.valid_pong(self._pong(7), peer, 7),
+            webapp.MacAddressDiscovery._valid_asf_pong(self._pong(7), peer, 7),
+        )
+
+    def test_both_lines_reject_the_same_replies(self) -> None:
+        from r730xd_core import discovery
+
+        webapp = self._webapp()
+        peer = ("192.168.5.130", 623)
+        for payload, port, tag in (
+            (self._pong(7), 623, 8),        # tag we never sent
+            (self._pong(7), 161, 7),        # not the RMCP port
+            (self._pong(7)[:20], 623, 7),   # truncated
+        ):
+            self.assertIsNone(discovery.valid_pong(payload, (peer[0], port), tag))
+            self.assertIsNone(
+                webapp.MacAddressDiscovery._valid_asf_pong(payload, (peer[0], port), tag)
+            )
+
+    def test_the_web_line_is_stricter_about_which_peers_count(self) -> None:
+        """Policy, deliberately not shared: core returns the address, the Web
+        line additionally refuses one it would never talk to."""
+        from r730xd_core import discovery
+
+        webapp = self._webapp()
+        loopback = ("127.0.0.1", 623)
+        self.assertEqual(discovery.valid_pong(self._pong(7), loopback, 7), "127.0.0.1")
+        self.assertIsNone(
+            webapp.MacAddressDiscovery._valid_asf_pong(self._pong(7), loopback, 7)
+        )
+
+
 class SharedSdrTests(unittest.TestCase):
     SNAPSHOT = "\n".join(
         (

@@ -28,6 +28,7 @@ from flask import Flask, jsonify, redirect, render_template, request, session
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 from werkzeug.security import check_password_hash
 
+from r730xd_core import discovery as core_discovery
 from r730xd_core import protocol
 from r730xd_core.redaction import redact_and_limit, safe_exception
 from r730xd_core.sdr import extract_reading_number, parse_sdr_records, sensor_category
@@ -368,19 +369,11 @@ class MacAddressDiscovery:
 
     @staticmethod
     def _valid_asf_pong(payload: bytes, peer: tuple[Any, ...], tag: int) -> str | None:
-        if len(peer) < 2 or peer[1] != 623 or len(payload) != 28:
+        """Shared wire check, then this line's own view of an acceptable peer."""
+        address = core_discovery.valid_pong(payload, peer, tag)
+        if address is None:
             return None
-        if (
-            payload[0:4] != b"\x06\x00\xff\x06"
-            or payload[4:8] != b"\x00\x00\x11\xbe"
-            or payload[8] != 0x40
-            or payload[9] != tag
-            or payload[10] != 0x00
-            or payload[11] != 0x10
-            or len(payload) != 12 + payload[11]
-        ):
-            return None
-        return MacAddressDiscovery._valid_candidate_ip(str(peer[0]))
+        return MacAddressDiscovery._valid_candidate_ip(address)
 
     @staticmethod
     def _probe_rmcp_presence(
@@ -388,9 +381,7 @@ class MacAddressDiscovery:
     ) -> Sequence[str]:
         responders: list[str] = []
         tag = secrets.randbelow(256)
-        presence_ping = bytes.fromhex("06 00 ff 06 00 00 11 be 80") + bytes(
-            (tag, 0x00, 0x00)
-        )
+        presence_ping = core_discovery.presence_ping(tag)
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
                 probe.setblocking(False)

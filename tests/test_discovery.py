@@ -82,21 +82,21 @@ class PongValidationTests(unittest.TestCase):
     def test_matching_tag_is_accepted(self) -> None:
         peer = ("192.168.5.130", 623)
         self.assertEqual(
-            discovery._valid_pong(self._pong(7), peer, 7), "192.168.5.130"
+            discovery.valid_pong(self._pong(7), peer, 7), "192.168.5.130"
         )
 
     def test_wrong_tag_is_rejected(self) -> None:
         peer = ("192.168.5.130", 623)
-        self.assertIsNone(discovery._valid_pong(self._pong(7), peer, 8))
+        self.assertIsNone(discovery.valid_pong(self._pong(7), peer, 8))
 
     def test_wrong_port_is_rejected(self) -> None:
         self.assertIsNone(
-            discovery._valid_pong(self._pong(7), ("192.168.5.130", 161), 7)
+            discovery.valid_pong(self._pong(7), ("192.168.5.130", 161), 7)
         )
 
     def test_truncated_payload_is_rejected(self) -> None:
         self.assertIsNone(
-            discovery._valid_pong(self._pong(7)[:20], ("192.168.5.130", 623), 7)
+            discovery.valid_pong(self._pong(7)[:20], ("192.168.5.130", 623), 7)
         )
 
 

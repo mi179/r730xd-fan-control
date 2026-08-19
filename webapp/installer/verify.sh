@@ -28,6 +28,15 @@ expected_mac=$(env_value WEB_CONTAINER_MAC)
 expected_cidr=$(env_value IDRAC_DISCOVERY_CIDR)
 [ -n "$expected_cidr" ] || die "IDRAC_DISCOVERY_CIDR is missing"
 
+# The CIDR says where to look; the MAC says what counts as a match. Without
+# it the app skips identity verification altogether rather than failing, so
+# check the pair, not just the half that was already checked.
+idrac_mac=$(env_value IDRAC_MAC)
+[ -n "$idrac_mac" ] || die "IDRAC_MAC is missing"
+case "$(printf %s "$idrac_mac" | tr 'A-F' 'a-f')" in
+    00:00:00:00:00:00) die "IDRAC_MAC is still the placeholder" ;;
+esac
+
 assert_uci() {
     key=$1
     expected=$2

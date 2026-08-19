@@ -354,18 +354,27 @@ class ConnectionDialog(ctk.CTkToplevel):
 
     def _scan(self) -> None:
         """Find BMCs on this segment. Runs off the UI thread; ~2 s of waiting."""
-        scan = discovery.scan_range()
-        if scan is None:
-            self.scan_hint.configure(text="无法判断本机所在网段", text_color=COLORS["amber"])
-            return
         self.scan_button.configure(state="disabled", text="扫描中…")
-        hint = f"正在探测 {scan.network}…"
-        if scan.note:
-            hint = f"{hint}（{scan.note}）"
-        self.scan_hint.configure(text=hint, text_color=COLORS["muted"])
+        self.scan_hint.configure(text="正在查网段…", text_color=COLORS["muted"])
 
         def work() -> None:
             try:
+                # scan_range() shells out (PowerShell on Windows, up to 15 s),
+                # so it belongs here rather than before the thread starts -
+                # otherwise pressing the button freezes the window.
+                scan = discovery.scan_range()
+                if scan is None:
+                    self.after(0, lambda: self._scan_failed("无法判断本机所在网段"))
+                    return
+                hint = f"正在探测 {scan.network}…"
+                if scan.note:
+                    hint = f"{hint}（{scan.note}）"
+                self.after(
+                    0,
+                    lambda text=hint: self.scan_hint.configure(
+                        text=text, text_color=COLORS["muted"]
+                    ),
+                )
                 # No ARP table is passed in: before the probe runs, the machine
                 # has never spoken to these hosts and the table cannot know
                 # them. The probe is what creates the entries, so it is read
@@ -1381,20 +1390,29 @@ class FanConsole(ctk.CTk):
         self.gauge.set_value(percent)
 
     def _test_connection(self) -> None:
-        self._relocate_by_mac()
-        self.controller.test_connection(on_success=self._connection_ok)
+        """Follow the remembered MAC first, then test - both off the UI thread.
 
-    def _relocate_by_mac(self) -> None:
-        """Follow the remembered MAC if the address it used to hold has moved."""
+        Reading the ARP table shells out (`arp -a`, up to 10 s on Windows), so
+        it cannot happen inline: the window would freeze on every test.
+        """
         if not self.remembered_mac:
+            self.controller.test_connection(on_success=self._connection_ok)
             return
-        current = discovery.address_for_mac(
-            discovery.read_arp_table(), self.remembered_mac
-        )
+
+        mac = self.remembered_mac
+
+        def work() -> None:
+            current = discovery.address_for_mac(discovery.read_arp_table(), mac)
+            self.after(0, lambda: self._relocated(current))
+
+        threading.Thread(target=work, name="idrac-relocate", daemon=True).start()
+
+    def _relocated(self, current: str | None) -> None:
         if current and current != self.host_var.get().strip():
             self._append_log("SYSTEM", f"iDRAC 地址已变为 {current}，按 MAC 重新定位。")
             self.host_var.set(current)
             self._refresh_connection_summary()
+        self.controller.test_connection(on_success=self._connection_ok)
 
     def _connection_ok(self, _result: CommandResult) -> None:
         chip, tone = presenters.connection_chip(True, online=True)
