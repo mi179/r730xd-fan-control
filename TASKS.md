@@ -43,5 +43,6 @@
 | T-039 | RMCP 探测/pong 校验三份实现（`r730xd_core/discovery.py`、`webapp/app.py`、`scripts/discover_idrac_rmcp.py`）：收敛到 core 或加交叉一致性测试 | Open | D-027, E-045 |
 | T-040 | SPEC「缺失 IDRAC_MAC / IDRAC_DISCOVERY_CIDR 拒绝启动」只在 compose/installer 层；app 层静默禁用身份核验（generic Linux 自配 compose 时凭据发往未核验主机）。D-005 未配置分支把表单密码直发 BMC，消耗 iDRAC 失败次数 | Open | E-045 |
 | T-041 | 加固：`enforce_same_origin` 对 Host 头白名单；桌面 `_scan` / `_relocate_by_mac` 的阻塞命令移出 UI 线程 | Open | E-045 |
+| T-042 | 把审计修复提交（`83198c1` / `3563f9c` / `96f77cd` / `e05a5f9`）合并回真实仓库 `/mnt/d/UserData/Documents/r730xd_fan`（或直接推送）；合并前先在真实仓库侧确认工作树干净 | Open；当前 4 个提交只存在于审阅副本 `/home/miao/r730xd-review`，push 需业主明确授权 | E-045 |
 
 关闭任务时把状态改为 Done + 日期，不删除行。
