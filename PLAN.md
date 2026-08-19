@@ -29,7 +29,7 @@
 - [x] T-010 WRT 原生构建、离线包、回滚保护与部署验收（E-030）
 - [x] D-022 `ipmitool` `SIGSEGV` 时保留并标记部分 SDR，其他失败不掩盖（E-031）
 - [ ] T-014 找到能在 iDRAC8 上完整读取 SDR 且不泄漏 session 的实现
-- [ ] T-015 push / `web-v0.4.0` tag / GitHub Release（外部发布需明确授权）
+- [ ] T-015 push / `web-v0.4.1` tag / GitHub Release（外部发布需明确授权；v0.4.0 已被取代，不单独发布）
 
 **出口标准**：完整 SDR 真机读取不崩溃、不泄漏 session；在此之前 UI 必须诚实标记 partial。
 

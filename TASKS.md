@@ -34,5 +34,14 @@
 | T-030 | 扫描范围读真实子网掩码，不再假设 /24；上限提到 512 让 /23 可完整扫描 | **Done 2026-08-19**（D-031, E-043） | D-031, E-043 |
 | T-031 | `install.sh` 把 OpenWrt 判定挪到工具检查之前。现在普通 Linux 用户先撞到第 220 行的 `uci is required`，会以为自己少装了个包，而不是看到第 225 行那句"只支持 OpenWrt"。检查顺序反了，报错把人引向错误方向 | Open；一处挪动，见 docs/DOCKER-GENERIC.md | D-029 |
 | T-032 | 桌面默认 iDRAC 地址改为空，配合 D-028 的扫描；README 同步 | **Done 2026-08-20**（D-032, E-044） | D-028, D-032 |
+| T-033 | 全量审计：发现落盘 `AUDIT-FINDINGS.md` + EVIDENCE E-045 | **Done 2026-08-20**（15 项发现：4 项当日修复，8 项转 T-038..T-041，1 项复核后撤回） | E-045 |
+| T-034 | CPU 读数槽位兜底收紧：只借用处理器实体(3.x)的 `Temp` 传感器，DIMM/硬盘温度不再冒充 CPU | **Done 2026-08-20**（提交 `83198c1`；桌面测试 94→95 项） | D-025, E-045 |
+| T-035 | 治理文档滞后回填：STATUS 风险节、PLAN `web-v0.4.0`→`0.4.1`、webapp/README「历史在内存中」旧句、DESKTOP-USAGE 默认地址表述 | **Done 2026-08-20** | E-045 |
+| T-036 | 离线包 README.txt 步骤编号重复（两个 4.） | **Done 2026-08-20**（提交 `3563f9c`） | E-045 |
+| T-037 | `deploy_wrt.ps1` 版本一致性断言补齐 README.txt，与 bundle 脚本对齐 | **Done 2026-08-20**（提交 `96f77cd`） | D-013, E-045 |
+| T-038 | 统一 IDRAC_HOST 默认值策略：`.151`（app.py / compose.yaml / 根 .env.example / index.html placeholder / webapp .env.example 注释）与 `.111`（install.sh / webapp .env.example / README.txt）共 7 处互相矛盾，真实地址 `.130` 一个都不是；桌面线已留空。需决策：Web 线也留空还是必填 | Open | E-045 |
+| T-039 | RMCP 探测/pong 校验三份实现（`r730xd_core/discovery.py`、`webapp/app.py`、`scripts/discover_idrac_rmcp.py`）：收敛到 core 或加交叉一致性测试 | Open | D-027, E-045 |
+| T-040 | SPEC「缺失 IDRAC_MAC / IDRAC_DISCOVERY_CIDR 拒绝启动」只在 compose/installer 层；app 层静默禁用身份核验（generic Linux 自配 compose 时凭据发往未核验主机）。D-005 未配置分支把表单密码直发 BMC，消耗 iDRAC 失败次数 | Open | E-045 |
+| T-041 | 加固：`enforce_same_origin` 对 Host 头白名单；桌面 `_scan` / `_relocate_by_mac` 的阻塞命令移出 UI 线程 | Open | E-045 |
 
 关闭任务时把状态改为 Done + 日期，不删除行。
