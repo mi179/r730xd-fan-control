@@ -12,7 +12,7 @@ R730xd Fan Web 0.4.1 — OpenWrt x86_64 离线安装包
 - 已安装 Docker Compose v2（命令为 docker compose）
 - 以 root 执行
 - 默认 WRT 地址 192.168.5.2、Web 端口 8088
-- 默认 iDRAC 最后地址 192.168.5.111
+- iDRAC 地址默认留空，靠 IDRAC_MAC 自动发现；填了就是最后已知地址
 - iDRAC MAC 默认为占位值；首次安装必须填写物理 iDRAC 网卡 MAC
 
 默认 IP 只是示例值，不属于密码。安装时会逐项显示；首次安装必须输入物理

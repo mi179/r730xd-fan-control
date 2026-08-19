@@ -1008,7 +1008,12 @@ class Backend:
             )
             if not self.state.telemetry_refreshing and retry_ready:
                 config, revision = self.state.config, self.state.config_revision
-                _require_connection(config)
+                # The worker calls refresh_endpoint() before touching the
+                # BMC, so an address it has not discovered yet is not a
+                # reason to refuse the request.
+                _require_connection(
+                    config, discoverable=self.mac_discovery is not None
+                )
                 self.state.telemetry_refreshing = True
                 self.state.telemetry_attempt_time = now
                 threading.Thread(
@@ -1125,9 +1130,24 @@ def _safe_exception(exc: Exception, password: str) -> str:
     return safe_exception(exc, password)
 
 
-def _require_connection(config: ConnectionConfig) -> None:
-    if not config.host or not config.username or not config.password:
+def _require_connection(config: ConnectionConfig, *, discoverable: bool = False) -> None:
+    """Credentials are always required. The address may still be unknown.
+
+    A hardcoded address goes stale the first time DHCP moves the BMC, so the
+    shipped default is empty (D-032). When MAC discovery is configured the
+    refresh worker resolves the address before using it, and refusing here
+    would deadlock: no telemetry without an address, no address without a
+    refresh. Callers that are about to open a connection leave the default
+    and stay strict.
+    """
+    if not config.username or not config.password:
         raise ApiError(400, "connection_not_configured", "请先填写 iDRAC 连接信息")
+    if not config.host and not discoverable:
+        raise ApiError(
+            400,
+            "connection_not_configured",
+            "请先填写 iDRAC 地址，或配置 IDRAC_MAC 让程序自行发现",
+        )
 
 
 def _validate_host(value: Any) -> str:
@@ -1566,9 +1586,16 @@ def _idrac_password_from_environment() -> str:
     return password
 
 
+def _env_host() -> str:
+    return os.getenv("IDRAC_HOST", "").strip()
+
+
 def _initial_connection() -> ConnectionConfig:
     return ConnectionConfig(
-        host=_validate_host(os.getenv("IDRAC_HOST", "192.168.5.151")),
+        # Empty is the shipped default: an address that is wrong is worse
+        # than one that is absent, because the console then looks configured
+        # and simply times out (D-032). Discovery fills it in by MAC.
+        host=(_validate_host(_env_host()) if _env_host() else ""),
         username=_validate_username(os.getenv("IDRAC_USER", "root")),
         password=_idrac_password_from_environment(),
         ipmi_port=_validate_port(os.getenv("IDRAC_IPMI_PORT", "623"), "IPMI"),
@@ -1663,6 +1690,25 @@ def create_app(
         raise RuntimeError("AUTH_MODE must be either 'static' or 'idrac'")
     app.config["AUTH_MODE"] = auth_mode
 
+    # SPEC states this as a hard boundary, but until now it was only enforced by
+    # compose's ${IDRAC_MAC:?}. Anything started outside compose - a hand-rolled
+    # deployment, a bare gunicorn - got mac_discovery=None, and then
+    # refresh_endpoint(require_verified=True) silently became a no-op:
+    # credentials would go to whatever IDRAC_HOST pointed at, unverified.
+    #
+    # Checked last so it never masks the guards that were here first.
+    # Resolved here rather than at the Backend call below, because the gate has
+    # to judge the configuration that will actually be used - the parameter is
+    # None whenever IDRAC_MAC comes from the environment.
+    if mac_discovery is None:
+        mac_discovery = _mac_discovery_from_environment()
+    if mac_discovery is None and not app.config["TESTING"]:
+        raise RuntimeError(
+            "IDRAC_MAC is required: without it the iDRAC identity cannot be "
+            "verified before credentials are sent. Set it in .env, or see "
+            "docs/DOCKER-GENERIC.md."
+        )
+
     store: TelemetryStore | None = None
     database_path = str(app.config.get("TELEMETRY_DB_PATH") or "").strip()
     if database_path:
@@ -1690,7 +1736,7 @@ def create_app(
         ),
         redfish_get or _redfish_client_from_environment(),
         os.getenv("REDFISH_CHASSIS_ID", "System.Embedded.1"),
-        mac_discovery if mac_discovery is not None else _mac_discovery_from_environment(),
+        mac_discovery,
     )
     app.extensions["r730xd_backend"] = backend
     app.extensions["login_limiter"] = LoginLimiter()
@@ -2238,4 +2284,19 @@ def create_app(
     return app
 
 
-app = create_app()
+_app: Flask | None = None
+
+
+def __getattr__(name: str) -> Flask:
+    """Construct the WSGI app the first time something asks for `app`.
+
+    gunicorn's `app:app` resolves through here and gets a real application;
+    `import app` on its own does not build one, so the tests are not forced to
+    satisfy production-only configuration such as IDRAC_MAC (T-040).
+    """
+    if name != "app":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    global _app
+    if _app is None:
+        _app = create_app()
+    return _app

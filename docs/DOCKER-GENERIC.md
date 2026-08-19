@@ -63,10 +63,14 @@ WEB_PORT=8088
 # 随机会话密钥，务必换掉示例占位值，否则重启后所有登录失效。
 FLASK_SECRET_KEY=<把下面那条命令的输出贴进来>
 
-# iDRAC 最后已知地址；地址会变没关系，MAC 才是身份。
-IDRAC_HOST=192.168.1.50            # 换成你扫描到的地址
+# 地址可以留空——MAC 才是身份，程序会自己找（D-034）。填了就当作最后已知地址，
+# 省掉首次启动的一轮扫描。
+IDRAC_HOST=
+
+# 这两项是必填。缺 IDRAC_MAC 时应用会拒绝启动：没有 MAC 就无法在发出凭据之前
+# 确认对面确实是你的 iDRAC。
 IDRAC_MAC=aa:bb:cc:dd:ee:ff        # 换成你自己 iDRAC 网口的 MAC
-IDRAC_DISCOVERY_CIDR=192.168.1.0/24
+IDRAC_DISCOVERY_CIDR=192.168.1.0/24   # 必须是 RFC1918 私有网段
 
 # ← 这一行就是上面说的坑。留空或填你自己的网卡名。
 IDRAC_ARP_INTERFACE=

@@ -30,7 +30,8 @@ services:
       TELEMETRY_RETENTION_DAYS: "${TELEMETRY_RETENTION_DAYS:-30}"
       TELEMETRY_FLUSH_INTERVAL: "${TELEMETRY_FLUSH_INTERVAL:-60}"
       TELEMETRY_FLUSH_THRESHOLD: "${TELEMETRY_FLUSH_THRESHOLD:-20}"
-      IDRAC_HOST: "${IDRAC_HOST:-192.168.5.151}"
+      # Empty by design: MAC is the identity, the address is a lease (D-032).
+      IDRAC_HOST: "${IDRAC_HOST:-}"
       IDRAC_MAC: "${IDRAC_MAC:?IDRAC_MAC must be set for safe discovery}"
       IDRAC_DISCOVERY_CIDR: "${IDRAC_DISCOVERY_CIDR:?IDRAC_DISCOVERY_CIDR must be set}"
       IDRAC_ARP_FILE: "/run/host-proc-net-arp"

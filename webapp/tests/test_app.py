@@ -32,6 +32,7 @@ from app import (  # noqa: E402
     _normalise_fingerprint,
     _parse_redfish_telemetry,
     _redfish_client_from_environment,
+    _require_connection,
     _sample_statistics,
     create_app,
 )
@@ -944,19 +945,72 @@ class SecurityPrimitiveTests(unittest.TestCase):
             runner.run(configured_connection(), ("mc", "info"), timeout=1)
         self.assertEqual(raised.exception.code, "ipmi_timeout")
 
+    def test_production_refuses_to_start_without_an_idrac_identity(self) -> None:
+        """SPEC calls this a hard boundary; before T-040 only compose enforced it.
+
+        Without a MAC there is nothing to verify the BMC against, and
+        refresh_endpoint(require_verified=True) degrades into a no-op - the
+        console would hand iDRAC credentials to whatever IDRAC_HOST points at.
+        """
+        with patch.dict(os.environ, {"IDRAC_MAC": "", "IDRAC_DISCOVERY_CIDR": ""}):
+            with self.assertRaisesRegex(RuntimeError, "IDRAC_MAC"):
+                create_app(
+                    {
+                        "TESTING": False,
+                        "SECRET_KEY": "identity-gate-test-secret-32-byte",
+                        "AUTH_MODE": "static",
+                        "WEB_USERNAME": "admin",
+                        "WEB_PASSWORD": "secret",
+                    },
+                    ipmi_runner=FakeIpmi(),
+                    redfish_get=FakeRedfish(),
+                )
+
+    def test_an_unknown_address_is_not_a_refusal_when_it_can_be_discovered(
+        self,
+    ) -> None:
+        """Empty IDRAC_HOST is the shipped default (D-032).
+
+        Refusing here would deadlock: no telemetry until an address is known, no
+        address until a refresh runs. Credentials are still required.
+        """
+        import dataclasses
+
+        blank = dataclasses.replace(configured_connection(), host="")
+        _require_connection(blank, discoverable=True)
+
+        with self.assertRaises(ApiError):
+            _require_connection(blank, discoverable=False)
+        with self.assertRaises(ApiError):
+            # Credentials are never optional, discoverable or not.
+            _require_connection(
+                dataclasses.replace(configured_connection(), password=""),
+                discoverable=True,
+            )
+
     def test_cross_origin_login_is_rejected(self) -> None:
-        app = create_app(
+        # TESTING is False here on purpose, to exercise the production origin
+        # check - which means this app is also subject to the production
+        # requirement that an iDRAC identity is configured (T-040).
+        with patch.dict(
+            os.environ,
             {
-                "TESTING": False,
-                "SECRET_KEY": "cross-origin-test-secret-32-bytes!",
-                "AUTH_MODE": "static",
-                "WEB_USERNAME": "admin",
-                "WEB_PASSWORD": "secret",
-                "REQUIRE_ORIGIN": True,
+                "IDRAC_MAC": "aa:bb:cc:dd:ee:ff",
+                "IDRAC_DISCOVERY_CIDR": "192.168.50.0/24",
             },
-            ipmi_runner=FakeIpmi(),
-            redfish_get=FakeRedfish(),
-        )
+        ):
+            app = create_app(
+                {
+                    "TESTING": False,
+                    "SECRET_KEY": "cross-origin-test-secret-32-bytes!",
+                    "AUTH_MODE": "static",
+                    "WEB_USERNAME": "admin",
+                    "WEB_PASSWORD": "secret",
+                    "REQUIRE_ORIGIN": True,
+                },
+                ipmi_runner=FakeIpmi(),
+                redfish_get=FakeRedfish(),
+            )
         client = app.test_client()
         response = client.post(
             "/api/auth/login",
@@ -1174,6 +1228,10 @@ class IdracAuthenticationTests(unittest.TestCase):
                 {
                     "IDRAC_PASSWORD_FILE": str(secret_path),
                     "IDRAC_PASSWORD": "ignored-environment-secret",
+                    # The shipped default address is empty now (D-032); this
+                    # test is about the password file, so state the address it
+                    # used to inherit rather than relying on a default.
+                    "IDRAC_HOST": "192.0.2.10",
                 },
             ):
                 app = create_app(

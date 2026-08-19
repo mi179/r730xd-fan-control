@@ -38,8 +38,8 @@
 | T-034 | 外部审计 F14 / F6：`verify.sh` 补 `IDRAC_MAC` 检查；D-005 补限定条件 | **Done 2026-08-20**（E-045） | D-005, E-045 |
 | T-035 | 外部审计 F4：RMCP 原语共用 + 跨线一致性测试 | **Done 2026-08-20**（D-033, E-045）；socket 循环按 D-033 刻意不合 | D-033, E-045 |
 | T-036 | 合并审阅副本的 5 个提交（`83198c1`..`c44aa79`，含 CPU 槽位修复与治理回填）。已取到本地 `review-audit` 分支并逐行复核，业主 2026-08-20 决定暂不合并 | Open；合并前需与本轮改动核对冲突（治理文件与 `webapp/installer/README.txt` 有重叠） | E-045 |
-| T-037 | 外部审计 F3/F11 → `IDRAC_HOST` 统一留空。**比预期大**：`_validate_host` 拒绝空串，`create_app` 会直接抛异常；`install.sh:336` 的 `is_ipv4` 同样拒绝。需要改启动语义（空 = 尚未发现，靠 `IDRAC_DISCOVERY_CIDR` + MAC 定位）| Open；业主已定"Web 线也留空" | D-032, E-045 |
-| T-040 | 外部审计 F5：SPEC 称"缺 MAC 则容器拒绝启动"，实际只由 compose 的 `${VAR:?}` 兜底，`create_app` 不检查，`require_verified` 因此退化为空操作 | Open；修需给 58 个 Web 测试留豁免口 | E-045 |
+| T-037 | 外部审计 F3/F11 → `IDRAC_HOST` 统一留空 | **Done 2026-08-20**（D-034, E-046）：拆开 `_require_connection`，地址可发现时可空、凭据始终必需 | D-032, D-034, E-046 |
+| T-040 | 外部审计 F5：SPEC 称"缺 MAC 则容器拒绝启动"，实际只由 compose 兜底 | **Done 2026-08-20**（D-034, E-046）：门禁下沉到 `create_app`，模块级 app 改惰性构造 | D-034, E-046 |
 | T-041 | 外部审计 F12：`enforce_same_origin` 信任 Host 头 | Open；业主 2026-08-20 决定只记档不改——浏览器场景有 `Sec-Fetch-Site` 与 cookie 域兜底，能伪造 Host 的客户端已在局域网内，而 D-021 已接受"本网段可信" | D-021, E-045 |
 
 关闭任务时把状态改为 Done + 日期，不删除行。

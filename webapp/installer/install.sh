@@ -309,7 +309,9 @@ default_bind=$(env_value WEB_BIND_ADDRESS "$OLD_ENV")
 [ -n "$default_bind" ] || default_bind=$(detect_lan_ip)
 [ -n "$default_bind" ] || default_bind="192.168.5.2"
 default_port=$(env_value WEB_PORT "$OLD_ENV"); [ -n "$default_port" ] || default_port="8088"
-default_host=$(env_value IDRAC_HOST "$OLD_ENV"); [ -n "$default_host" ] || default_host="192.168.5.111"
+# No shipped default: an address that is wrong is worse than one that is
+# absent (D-032). Leave it empty and the app finds the BMC by MAC.
+default_host=$(env_value IDRAC_HOST "$OLD_ENV")
 default_mac=$(env_value IDRAC_MAC "$OLD_ENV"); [ -n "$default_mac" ] || default_mac="00:00:00:00:00:00"
 default_cidr=$(env_value IDRAC_DISCOVERY_CIDR "$OLD_ENV"); [ -n "$default_cidr" ] || default_cidr="192.168.5.0/24"
 default_interface=$(env_value IDRAC_ARP_INTERFACE "$OLD_ENV"); [ -n "$default_interface" ] || default_interface="br-lan"
@@ -325,7 +327,7 @@ fi
 
 WEB_BIND_ADDRESS=${WEB_BIND_ADDRESS:-$(ask_value "WRT LAN address" "$default_bind")}
 WEB_PORT=${WEB_PORT:-$(ask_value "Web port" "$default_port")}
-IDRAC_HOST=${IDRAC_HOST:-$(ask_value "iDRAC last-known address" "$default_host")}
+IDRAC_HOST=${IDRAC_HOST-$(ask_value "iDRAC last-known address (blank = find by MAC)" "$default_host")}
 IDRAC_MAC=${IDRAC_MAC:-$(ask_value "iDRAC MAC" "$default_mac")}
 IDRAC_DISCOVERY_CIDR=${IDRAC_DISCOVERY_CIDR:-$(ask_value "iDRAC discovery CIDR" "$default_cidr")}
 IDRAC_ARP_INTERFACE=${IDRAC_ARP_INTERFACE:-$(ask_value "WRT LAN interface" "$default_interface")}
@@ -333,7 +335,8 @@ IDRAC_USER=${IDRAC_USER:-$(ask_value "iDRAC username" "$default_user")}
 WEB_CONTAINER_MAC=${WEB_CONTAINER_MAC:-$default_container_mac}
 
 is_ipv4 "$WEB_BIND_ADDRESS" || die "WEB_BIND_ADDRESS must be an IPv4 address"
-is_ipv4 "$IDRAC_HOST" || die "IDRAC_HOST must be an IPv4 address"
+[ -z "$IDRAC_HOST" ] || is_ipv4 "$IDRAC_HOST" \
+    || die "IDRAC_HOST must be an IPv4 address, or empty to discover it by MAC"
 valid_port "$WEB_PORT" || die "WEB_PORT must be between 1 and 65535"
 printf '%s\n' "$IDRAC_MAC" | grep -Eq '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$' || die "IDRAC_MAC is invalid"
 [ "$(printf '%s' "$IDRAC_MAC" | tr 'A-F' 'a-f')" != "00:00:00:00:00:00" ] || die "IDRAC_MAC must be set to the physical iDRAC NIC MAC"
