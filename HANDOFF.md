@@ -12,7 +12,8 @@
 5. `PLAN.md` —— 阶段门禁
 6. `TASKS.md` —— 未结事项
 7. `EVIDENCE.md` —— 以上所有结论背后的证据
-8. `README.md` / `webapp/README.md` —— 面向用户的操作文档（最详细的使用说明在这里）
+8. `AUDIT-FINDINGS.md` —— 2026-08-20 全量审计的结论清单（F1..F15）；已修项带提交号，撤回项带复核记录，未修项对应 `TASKS.md` 的 T-038..T-041
+9. `README.md` / `webapp/README.md` —— 面向用户的操作文档（最详细的使用说明在这里）
 
 ## The one-line version
 

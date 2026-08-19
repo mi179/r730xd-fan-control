@@ -124,6 +124,31 @@ class KeyReadingTests(unittest.TestCase):
         self.assertEqual(cards[1].value, "--")
         self.assertEqual(cards[2].value, "--")
 
+    def test_cpu_slot_borrows_only_a_processor_entity_temp(self) -> None:
+        """Dell labels the CPU diode just "Temp" with a processor entity (3.x);
+        a DIMM or drive temperature must never appear under the CPU label
+        (D-025)."""
+        non_cpu = "\n".join(
+            (
+                "Inlet Temp | 04h | ok | 7.1 | 23 degrees C",
+                "DIMM A1 Temp | 30h | ok | 32.1 | 41 degrees C",
+                "HDD Temp | 31h | ok | 7.1 | 30 degrees C",
+            )
+        )
+        cards = summarize_key_readings(parse_sensor_output(non_cpu))
+        self.assertEqual(cards[2].value, "--")
+        self.assertEqual(cards[2].status, "unknown")
+
+        processor = "\n".join(
+            (
+                "Inlet Temp | 04h | ok | 7.1 | 23 degrees C",
+                "Temp | 0Eh | ok | 3.1 | 48 degrees C",
+            )
+        )
+        cards = summarize_key_readings(parse_sensor_output(processor))
+        self.assertEqual(cards[2].value, "48")
+        self.assertEqual(cards[2].detail, "Temp")
+
 
 class RedactionTests(unittest.TestCase):
     """The password must not survive into anything a human can read.

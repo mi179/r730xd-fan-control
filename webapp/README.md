@@ -175,7 +175,8 @@ fw4 check && /etc/init.d/firewall reload
 ```
 
 `docker compose ps` 的 `healthy` 只说明 Web 进程存活；页面上的 iDRAC 状态才表示
-带外管理链路与遥测是否正常。历史在内存中，重启容器后会重新积累。
+带外管理链路与遥测是否正常。遥测历史落 SQLite（`/data/telemetry.db`），容器重启
+不清零；详情见下文「遥测历史持久化」。
 
 自动发现只适用于与 WRT 直连的二层 IPv4 子网。Compose 将宿主
 `/proc/1/net/arp` 只读挂载进容器；不要改成 `/proc/net/arp`，后者看到的是 Docker
